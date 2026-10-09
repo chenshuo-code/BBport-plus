@@ -10,6 +10,10 @@ Launcher options live in %APPDATA%/bbport-launcher/settings.json.
 Frozen with PyInstaller (packaging/windows/package.sh) the same Bloodborne.exe also runs the
 game without the window (`--play`), run.py (`--run`) and the preparation scripts (`--script`),
 so a packaged port needs no Python installation.
+
+Modified in bbport-plus on 2026-10-09 (GPL-2.0 section 2a notice; see CHANGELOG.md): game languages
+Chinese (Simplified, Traditional) and Korean, a log per run, crash reports and frame-drop records
+(bbport_diag.py), the --diag-report command, and no automatic update check.
 """
 import ctypes
 import json

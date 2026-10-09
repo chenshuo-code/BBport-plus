@@ -1,2 +1,3 @@
 # Keep upstream files byte-identical: no line-ending conversion.
 * -text
+/tools/windows/*.bat text eol=crlf
