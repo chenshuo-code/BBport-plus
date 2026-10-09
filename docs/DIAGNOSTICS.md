@@ -14,6 +14,7 @@ All files go to `<saves folder>\logs\` (the saves folder is set on the *Game & e
 | `run_<time>_stalls.log` | Every frame over 40 ms, with the game's own breakdown: images registered, MB uploaded, time in each stage. Map changes show up here. |
 | `run_<time>_load.csv` | Any GPU vendor: adapter VRAM, 3D engine load, the game's VRAM, free RAM and free commit memory every 2 s (Windows performance counters). |
 | `run_<time>_gpu.csv` | NVIDIA only (`nvidia-smi`): usage, VRAM, temperature, clocks, power and the reasons the GPU is throttling. |
+| `run_<time>_proc.csv` | The game process itself every 2 s: private memory, memory in RAM, commit, **thread count and handle count**. A leak shows as a column that keeps growing, for example a step up at every map change. |
 | `perf_events.log` | Every drop from a steady 55+ FPS to under 40 FPS, with the frame statistics, pacing, GPU / VRAM state, texture-cache pressure and the stalls in that window. |
 | `crash_<time>.txt` | Written when the game ends abnormally (see below). |
 | `sessions.csv` | One row per run: duration, result (`ok`, `crash`, `stopped`, `restart`), average / minimum FPS, drops, stalls, peak VRAM. |

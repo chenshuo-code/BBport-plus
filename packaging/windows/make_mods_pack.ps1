@@ -6,9 +6,12 @@
 #
 # Keep the pack private. Mods change the game's own files, so this project never ships them and neither should you:
 # do not upload the pack to GitHub or any public place. The file name is ignored by .gitignore (*mods-pack*.zip).
+#   -Settings <file>   also puts this bbport.ini (graphics settings) into the pack; the installer copies it over
+#                      the installation's bbport.ini.
 param(
     [Parameter(Mandatory)][string]$Package,
-    [Parameter(Mandatory)][string]$Out
+    [Parameter(Mandatory)][string]$Out,
+    [string]$Settings
 )
 $ErrorActionPreference = 'Stop'
 $mods = Join-Path $Package 'mods'
@@ -37,6 +40,10 @@ try {
     }
     $json = Join-Path $Package 'mods.json'
     if (Test-Path -LiteralPath $json) { Add-ToZip $json 'mods.json' }
+    if ($Settings) {
+        if (-not (Test-Path -LiteralPath $Settings)) { throw "Settings file not found: $Settings" }
+        Add-ToZip $Settings 'bbport.ini'
+    }
 } finally {
     $zip.Dispose()
     $zipFile.Dispose()

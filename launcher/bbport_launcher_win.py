@@ -177,7 +177,7 @@ APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'
                 'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': bbport_diag.system_game_language(),
                 'player_name': '', 'fullscreen': False, 'hdr': False, 'present_mode': 'Mailbox',
                 'fps_mode': 'uncap', 'frame_cap': '', 'draw_pipe': '', 'readbacks': '',
-                'frames_ahead': '', 'frame_stats': False, 'gpu_profile': False, 'diagnostics': True,
+                'frames_ahead': '', 'frame_stats': False, 'gpu_profile': False, 'diagnostics': True, 'disable_obs_hook': True,
                 'vk_validation': False, 'extra_env': '', 'close_on_play': False,
                 'check_updates': True, 'online': False, 'online_server': 'srv.shadps4.net:31313',
                 'online_webapi': '', 'online_npid': '', 'online_password': '', 'online_upnp': True,
@@ -415,6 +415,8 @@ def game_environment(s):
             env[name] = '1'
     if s.get('diagnostics', True):  # fork: the frame statistics feed the drop / stall records
         env['BB_FRAME_STATS'] = '1'
+    if s.get('disable_obs_hook', True):  # fork: OBS's Vulkan capture layer is a known cause of crashes
+        env['DISABLE_VULKAN_OBS_CAPTURE'] = '1'
     for item in str(s['extra_env']).split():
         if '=' in item:
             key, value = item.split('=', 1)
@@ -1050,6 +1052,7 @@ class Launcher:
                    'Насколько точно данные, записанные GPU, возвращаются игре.'))
         self.section(f, _('Diagnostics', 'Для разработчика'))
         self.check(f, 'diagnostics', 'app', _('Record crash reports, GPU data and frame drops (recommended)'))
+        self.check(f, 'disable_obs_hook', 'app', _('Switch off the OBS capture hook for the game (recommended if OBS is installed)'))
         holder = ttk.Frame(f)
         holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=(4, 8))
         ttk.Button(holder, text=_('Open logs folder'),

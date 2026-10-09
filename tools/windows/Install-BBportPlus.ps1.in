@@ -105,8 +105,10 @@ try {
         robocopy $modsRoot (Join-Path $Destination 'mods') /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
         $modsJson = Join-Path $work 'modspack\mods.json'
         if (Test-Path -LiteralPath $modsJson) { Copy-Item -LiteralPath $modsJson -Destination (Join-Path $Destination 'mods.json') -Force }
+        $settings = Join-Path $work 'modspack\bbport.ini'
+        if (Test-Path -LiteralPath $settings) { Copy-Item -LiteralPath $settings -Destination (Join-Path $Destination 'bbport.ini') -Force }
         $modCount = @(Get-ChildItem -LiteralPath (Join-Path $Destination 'mods') -Directory).Count
-        Write-Output "Mods pack installed: $modCount mod folders."
+        Write-Output "Mods pack installed: $modCount mod folders$(if (Test-Path -LiteralPath $settings) { ' and its graphics settings (bbport.ini)' })."
     }
 } finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue

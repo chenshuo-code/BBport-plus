@@ -8,6 +8,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Nothing yet.
 
+## [1.6-plus.3] - 2026-10-09
+
+Based on upstream `windows-v1.6` (commit `e076119`). Release notes:
+[docs/releases/v1.6-plus.3.md](docs/releases/v1.6-plus.3.md). Aimed at finding a crash that was seen on an AMD
+machine (an access violation inside `ucrtbase.dll`, 79 minutes after Windows had flagged the game process for a
+memory leak).
+
+### Added
+- `run_<time>_proc.csv`: private memory, memory in RAM, commit, thread count and handle count of the game process
+  every 2 s, read through Win32 calls (works on any Windows language). The same figures are in the crash report
+  (last 40 samples), in each frame-drop record and in the end-of-run summary line.
+- A launcher setting *Switch off the OBS capture hook for the game* (on by default): sets
+  `DISABLE_VULKAN_OBS_CAPTURE=1`, because OBS's Vulkan capture layer was loaded into the crashed process.
+- `make_mods_pack.ps1 -Settings <bbport.ini>` puts graphics settings into a private pack; the installer copies them over.
+
 ## [1.6-plus.2] - 2026-10-09
 
 Based on upstream `windows-v1.6` (commit `e076119`), like 1.6-plus.1. Release notes:
@@ -56,6 +71,7 @@ unchanged. Release notes: [docs/releases/v1.6-plus.1.md](docs/releases/v1.6-plus
 - The update check looks at this project's releases and only opens the release page. It no longer downloads and
   replaces the package, which would remove this launcher.
 
-[Unreleased]: https://github.com/chenshuo-code/BBport-plus/compare/v1.6-plus.2...HEAD
+[Unreleased]: https://github.com/chenshuo-code/BBport-plus/compare/v1.6-plus.3...HEAD
+[1.6-plus.3]: https://github.com/chenshuo-code/BBport-plus/compare/v1.6-plus.2...v1.6-plus.3
 [1.6-plus.2]: https://github.com/chenshuo-code/BBport-plus/compare/v1.6-plus.1...v1.6-plus.2
 [1.6-plus.1]: https://github.com/chenshuo-code/BBport-plus/releases/tag/v1.6-plus.1
