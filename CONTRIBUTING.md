@@ -6,7 +6,9 @@ bugs in the game runtime itself (the native part, `src/`, `gpu/`) are best repor
 ## Rules that matter
 
 - **No game material, ever.** No dumps, `eboot.bin`, `dvdroot_ps4` files, saves, or anything under an `out\` folder
-  (those are derived from the game executable). Mods that other people made are not hosted here either; link to them.
+  (those are derived from the game executable). Mods change the game's own files and belong to their authors, so they
+  are not hosted here either, not even as a pack: link to them. `packaging\windows\make_mods_pack.ps1` is for moving
+  your own mods between your own PCs.
 - Keep the licence: everything is GPL-2.0-or-later, new files get the `SPDX-License-Identifier: GPL-2.0-or-later`
   header, and a changed upstream file gets a note in its header saying so and when.
 - Do not add redistributable copies of proprietary binaries (for example NVIDIA's DLSS runtime).

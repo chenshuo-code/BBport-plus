@@ -8,6 +8,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Nothing yet.
 
+## [1.6-plus.2] - 2026-10-09
+
+Based on upstream `windows-v1.6` (commit `e076119`), like 1.6-plus.1. Release notes:
+[docs/releases/v1.6-plus.2.md](docs/releases/v1.6-plus.2.md).
+
+### Added
+- `Install-BBportPlus.ps1 -ModsZip <pack>`: installs a private mods pack, so the mods appear on the launcher's
+  *Mods & patches* page. `packaging/windows/make_mods_pack.ps1` makes such a pack from an installed package. bbport-plus
+  itself still ships no mods.
+- A `mods\README.txt` in the release explains the mod folder layout.
+
+### Changed
+- When the game ends abnormally the folder with the crash report now opens by itself, with the file selected. The
+  question "open the logs folder?" is gone; after `Play Bloodborne.exe` runs a message box only informs.
+- The release no longer carries `tools\Collect_Crash_History.bat`: the launcher has the same function (*Advanced →
+  Collect crash history*). The script stays in the source repository for machines without the package.
+
 ## [1.6-plus.1] - 2026-10-09
 
 First test release, based on upstream `windows-v1.6` (commit `e076119`). The native runtime (`bin\bb-probe.exe`) is
@@ -39,5 +56,6 @@ unchanged. Release notes: [docs/releases/v1.6-plus.1.md](docs/releases/v1.6-plus
 - The update check looks at this project's releases and only opens the release page. It no longer downloads and
   replaces the package, which would remove this launcher.
 
-[Unreleased]: https://github.com/chenshuo-code/BBport-plus/compare/v1.6-plus.1...HEAD
+[Unreleased]: https://github.com/chenshuo-code/BBport-plus/compare/v1.6-plus.2...HEAD
+[1.6-plus.2]: https://github.com/chenshuo-code/BBport-plus/compare/v1.6-plus.1...v1.6-plus.2
 [1.6-plus.1]: https://github.com/chenshuo-code/BBport-plus/releases/tag/v1.6-plus.1

@@ -30,14 +30,16 @@ The crash report contains: the exit code and its meaning; the fault lines from t
 FPS windows, GPU samples and memory state; the graphics adapters and driver versions; the Windows event
 log entries about the game (application errors of `bb-probe.exe`, graphics driver resets 4101 / 4116,
 low memory 2004, power loss 41 / 6008) from the 15 minutes before; the settings (online account data is
-left out); and the last 400 output lines. When the game was started without the launcher window
-(`Play Bloodborne.exe`) a message box tells you where the report is.
+left out); and the last 400 output lines. Nothing has to be started or clicked: when the game ends
+abnormally the folder with the report opens by itself, with the file selected. After a run started without the
+launcher window (`Play Bloodborne.exe`) a message box says so as well.
 
 ## Crashes from before the logs existed
 
 `Bloodborne.exe --diag-report 72` (or **Advanced → Collect crash history**) writes a report with only the
-Windows event log part for the last 72 hours. `tools\windows\Collect_Crash_History.bat` does the same
-without the game package, for a machine that only needs to be inspected.
+Windows event log part for the last 72 hours. `tools\windows\Collect_Crash_History.bat` (in the source
+repository, not in the release) does the same without the game package, for a machine that only needs to be
+inspected.
 
 ## Reading a drop
 

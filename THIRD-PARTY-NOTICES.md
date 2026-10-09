@@ -30,6 +30,10 @@ contains, among others, NVIDIA's `nvngx_dlss.dll`, which is governed by NVIDIA's
 stand-alone product or as part of software that must be redistributable at no charge, so this project leaves its
 distribution to the upstream package.
 
+## Mods
+
+bbport-plus loads mods but includes none. They change the game's own files and have their own authors and terms.
+
 ## Source code
 
 The source for every binary in the overlay is this repository at the release tag. The source for the upstream

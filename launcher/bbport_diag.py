@@ -28,7 +28,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-PLUS_VERSION = '1.6-plus.1'   # bbport-plus release; the part before '-plus' is the upstream version it is based on
+PLUS_VERSION = '1.6-plus.2'   # bbport-plus release; the part before '-plus' is the upstream version it is based on
 PLUS_REPO = 'chenshuo-code/BBport-plus'
 KEEP_RUNS = 40          # run logs kept (older ones are deleted with their csv files)
 KEEP_CRASHES = 200
@@ -78,8 +78,8 @@ ZH = {
     'Open logs folder': '打开日志文件夹',
     'Collect crash history (72 h)': '收集崩溃历史(72 小时)',
     'Report saved:\n{}': '报告已保存:\n{}',
-    'The game ended abnormally (exit code {}).\nA crash report was saved:\n{}\n\nOpen the logs folder?':
-        '游戏异常退出(退出码 {})。\n已保存崩溃报告:\n{}\n\n是否打开日志文件夹?',
+    'The game ended abnormally (exit code {}).\nThe crash report was saved and its folder is open:\n{}':
+        '游戏异常退出(退出码 {})。\n已保存崩溃报告,所在文件夹已自动打开:\n{}',
     'Crash report saved: {}': '崩溃报告已保存:{}',
     'Chinese, Simplified (简体中文)': '简体中文',
     'Chinese, Traditional (繁體中文)': '繁體中文',

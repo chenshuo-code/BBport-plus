@@ -16,12 +16,13 @@ and stutter** and at players who use Chinese. Same licence as upstream: GPL-2.0-
   next launch), kept in `<saves folder>\logs\`.
 - **Automatic crash report** when the game ends abnormally: exit code, the runtime's fault lines, the last output,
   GPU and memory state, graphics adapters, and the matching Windows event log entries (application errors, graphics
-  driver resets, low memory).
+  driver resets, low memory). The folder with the report opens by itself; there is nothing to click or start.
 - **Frame-drop and stutter records**: every fall from a steady 55+ FPS to under 40, and every frame over 40 ms with
   the game's own breakdown (shader compiles, texture uploads). Works with any GPU; NVIDIA cards also log
   temperature, power and throttle reasons.
-- `tools/windows/Collect_Crash_History.bat`: exports what Windows recorded about crashes and driver resets from
-  before the logs existed. It needs nothing but Windows.
+- **Advanced → Collect crash history** (or `Bloodborne.exe --diag-report`): what Windows recorded about crashes and
+  driver resets from before the logs existed.
+- **Mods**: pick which mods load, and in which order, on *Mods & patches*. bbport-plus ships none (see *Mods* below).
 
 Details and how to read the files: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
 
@@ -31,9 +32,10 @@ Details and how to read the files: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
 
 - 启动器的游戏语言增加简体中文、繁体中文、韩语。
 - 每次运行单独保存日志,不再被下一次启动覆盖;日志在存档目录的 `logs\` 下。
-- 游戏异常退出时自动生成崩溃报告(退出码、故障行、显卡和内存状态、Windows 事件日志中的相关记录)。
+- 游戏异常退出时自动生成崩溃报告(退出码、故障行、显卡和内存状态、Windows 事件日志中的相关记录),并自动打开报告所在文件夹,无需任何操作。
 - 自动记录帧率从稳定 55 以上掉到 40 以下的时刻,以及每一个超过 40 ms 的卡顿帧。任意显卡可用。
-- `tools/windows/Collect_Crash_History.bat`:不依赖游戏,导出 Windows 对闪退和显卡驱动重置的记录。
+- 启动器 *Advanced* 页的“收集崩溃历史”:导出 Windows 对闪退和显卡驱动重置的记录。
+- MOD 在 *Mods & patches* 页勾选加载、调整顺序;本项目不附带任何 MOD。
 
 仓库不含任何游戏文件,需要自备 1.09 版的解密转储。
 
@@ -60,6 +62,23 @@ folder. Safe to read first: the script is plain PowerShell and is short.
 脚本会从上游官方发行页下载 v1.6 并校验哈希,再叠加本项目的启动器;安装目录必须在 NTFS 磁盘上。游戏语言在启动器
 *Game & effects* 页选择,列表里有简体中文和繁体中文。
 
+## Mods
+
+The launcher lays mods over the game when it starts and never changes the game files. Put each mod in its own folder
+under `mods\` (with the game's folders inside, such as `chr\`, `menu\`, `msg\`, or a `dvdroot_ps4\` folder) and choose
+which ones load, and in which order, on *Mods & patches*.
+
+**bbport-plus does not include or host any mods.** Mods change the game's own files, which belong to Sony and
+FromSoftware, and every mod has its own author and terms. To move your own mods to another PC of yours, make a private
+pack and install it with the installer:
+
+```powershell
+.\packaging\windows\make_mods_pack.ps1 -Package D:\Games\bbport-plus -Out D:\my-mods-pack.zip
+.\Install-BBportPlus.ps1 -Destination E:\Games\bbport-plus -ModsZip D:\my-mods-pack.zip
+```
+
+Keep such a pack private; do not upload it.
+
 ## Build
 
 ```powershell
@@ -75,6 +94,7 @@ Open an [issue](https://github.com/chenshuo-code/BBport-plus/issues/new/choose) 
 `crash_<time>.txt` (crash) or `perf_events.log` (stutter) from `<saves folder>\logs\`, and say which graphics card
 and driver you use. Details: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md). Please do not attach game files.
 Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Staying in step with upstream
 
 The changes are in `launcher/bbport_launcher_win.py` (small hooks), the new `launcher/bbport_diag.py`,
@@ -87,6 +107,7 @@ git merge upstream/windows
 ```
 
 ---
+
 # Bloodborne for Windows
 
 **Bloodborne running natively on Windows 10 and 11, by [Supermedo](https://github.com/Supermedo) Mohammed Albarghouthi.**

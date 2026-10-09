@@ -366,15 +366,24 @@ def diag_report(settings, hours):
     return 0
 
 
-def crash_notice(code, report):
-    """After --play (no window): tells the player that a crash report was written."""
+def reveal_report(report):
+    """Opens the folder of a crash report with the file selected (nothing to click or confirm)."""
     if os.environ.get('BB_NO_DIALOG'):  # scripted tests
         return
-    text = _('The game ended abnormally (exit code {}).\nA crash report was saved:\n{}\n\n'
-             'Open the logs folder?').format(code, report)
-    # MB_YESNO | MB_ICONWARNING | MB_TOPMOST
-    if ctypes.windll.user32.MessageBoxW(None, text, 'Bloodborne', 0x4 | 0x30 | 0x40000) == 6:
-        os.startfile(str(Path(report).parent))
+    try:
+        subprocess.Popen(['explorer', f'/select,{report}'])
+    except OSError:
+        pass
+
+
+def crash_notice(code, report):
+    """After --play (no window): the crash report was written; its folder opens by itself."""
+    if os.environ.get('BB_NO_DIALOG'):  # scripted tests
+        return
+    reveal_report(report)
+    text = _('The game ended abnormally (exit code {}).\nThe crash report was saved and its folder is open:\n{}'
+             ).format(code, report)
+    ctypes.windll.user32.MessageBoxW(None, text, 'Bloodborne', 0x0 | 0x30 | 0x40000)  # MB_OK | MB_ICONWARNING | MB_TOPMOST
 
 
 def game_environment(s):
@@ -1323,6 +1332,7 @@ class Launcher:
         report = recorder.finish(code)
         if report:
             self.output.put(_('Crash report saved: {}').format(report) + '\n')
+            reveal_report(report)
         self.output.put((code,))
 
     def drain_output(self):

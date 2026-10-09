@@ -36,3 +36,4 @@ SaveData/
 logs/
 diag_report_*.txt
 crash_*.txt
+*mods-pack*.zip

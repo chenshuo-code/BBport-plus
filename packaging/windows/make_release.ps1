@@ -32,11 +32,10 @@ if (-not (Test-Path (Join-Path $dist 'Bloodborne.exe'))) { throw 'the launcher w
 $out = Join-Path $root 'dist\release'
 $stage = Join-Path $root 'out\overlay-stage'
 foreach ($p in $out, $stage) { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force } }
-New-Item -ItemType Directory -Force $out, $stage, "$stage\tools", "$stage\docs" | Out-Null
+New-Item -ItemType Directory -Force $out, $stage, "$stage\docs", "$stage\mods" | Out-Null
 
 Copy-Item (Join-Path $dist 'Bloodborne.exe') $stage
 Copy-Item (Join-Path $dist '_internal') (Join-Path $stage '_internal') -Recurse
-Copy-Item (Join-Path $root 'tools\windows\Collect_Crash_History.ps1'), (Join-Path $root 'tools\windows\Collect_Crash_History.bat') "$stage\tools"
 Copy-Item (Join-Path $root 'docs\DIAGNOSTICS.md') "$stage\docs"
 Copy-Item (Join-Path $root 'LICENSE'), (Join-Path $root 'CHANGELOG.md'), (Join-Path $root 'THIRD-PARTY-NOTICES.md') $stage
 @"
@@ -47,9 +46,17 @@ This is the bbport-plus launcher. It is meant to be put over the official upstre
 unpacked upstream bbport-windows folder and let it replace Bloodborne.exe and _internal.
 
 No game files are included. Source code: https://github.com/$repo (tag $tag, commit $commit).
-Changes and how to read the logs: CHANGELOG.md, docs\DIAGNOSTICS.md. Licence: GPL-2.0-or-later (LICENSE).
+Changes and how to read the logs: CHANGELOG.md, docs\DIAGNOSTICS.md. If the game crashes, a crash report is written to
+<saves folder>\logs and that folder opens by itself. Licence: GPL-2.0-or-later (LICENSE).
 "@ | Set-Content -Path "$stage\README-bbport-plus.txt" -Encoding UTF8
 
+@"
+Mods go here: one folder per mod, with the game's folders inside (chr\, menu\, msg\, ... or dvdroot_ps4\...).
+Choose which ones load, and in which order, on the launcher's "Mods & patches" page. The game files are never changed:
+the launcher lays the mods over the game when it starts.
+
+bbport-plus does not ship any mods. Mods change the game's own files, so they are not ours to redistribute.
+"@ | Set-Content -Path "$stage\mods\README.txt" -Encoding UTF8
 $overlayName = "bbport-plus-$version-overlay.zip"
 $overlay = Join-Path $out $overlayName
 # Written by hand: Windows PowerShell's own zip helpers store paths with backslashes, which the zip format forbids.
