@@ -1,2 +1,2 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Keep upstream files byte-identical: no line-ending conversion.
+* -text
