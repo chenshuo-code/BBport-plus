@@ -33,6 +33,8 @@ unchanged. Release notes: [docs/releases/v1.6-plus.1.md](docs/releases/v1.6-plus
   issue templates.
 
 ### Changed
+- The game language starts out as the Windows display language (Chinese, Japanese, Korean, French, Spanish, German,
+  Italian, Russian, otherwise English). A saved choice is kept.
 - Frame statistics (`BB_FRAME_STATS=1`) are switched on while diagnostics are on (the default).
 - The update check looks at this project's releases and only opens the release page. It no longer downloads and
   replaces the package, which would remove this launcher.

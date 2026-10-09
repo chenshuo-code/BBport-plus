@@ -87,6 +87,24 @@ ZH = {
 }
 
 
+# Windows primary language id -> the game's language id (PS4 system language numbers). The game has more
+# languages than the launcher lists; those fall back to English.
+GAME_LANGUAGES = {0x11: '0', 0x09: '1', 0x0c: '2', 0x0a: '3', 0x07: '4', 0x10: '5', 0x19: '8', 0x12: '9'}
+
+
+def system_game_language(lang_id=None):
+    """The game language that matches the Windows display language ('11' Simplified Chinese, '10' Traditional,
+    '1' English when the game has no such language)."""
+    if lang_id is None:
+        try:
+            lang_id = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+        except (AttributeError, OSError):
+            return '1'
+    primary, sub = lang_id & 0x3ff, lang_id >> 10
+    if primary == 0x04:  # Chinese: Traditional for Taiwan, Hong Kong and Macau, Simplified otherwise
+        return '10' if sub in (0x01, 0x03, 0x05) else '11'
+    return GAME_LANGUAGES.get(primary, '1')
+
 def plus_key(text):
     """Sort key of a bbport-plus tag such as v1.6-plus.1 -> ((1, 6), 1); unknown tags sort first."""
     match = re.match(r'v?(\d+(?:\.\d+)*)-plus\.(\d+)', text or '')
