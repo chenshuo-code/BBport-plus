@@ -28,7 +28,8 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-FORK_BUILD = True       # this launcher carries local changes: no automatic update check
+PLUS_VERSION = '1.6-plus.1'   # bbport-plus release; the part before '-plus' is the upstream version it is based on
+PLUS_REPO = 'chenshuo-code/BBport-plus'
 KEEP_RUNS = 40          # run logs kept (older ones are deleted with their csv files)
 KEEP_CRASHES = 200
 DROP_FPS = 40.0         # a window below this ...
@@ -84,6 +85,24 @@ ZH = {
     'Chinese, Traditional (繁體中文)': '繁體中文',
     'Korean (한국어)': '한국어',
 }
+
+
+def plus_key(text):
+    """Sort key of a bbport-plus tag such as v1.6-plus.1 -> ((1, 6), 1); unknown tags sort first."""
+    match = re.match(r'v?(\d+(?:\.\d+)*)-plus\.(\d+)', text or '')
+    if not match:
+        return ((0,), 0)
+    return (tuple(int(n) for n in match.group(1).split('.')), int(match.group(2)))
+
+
+def latest_plus_release():
+    """(tag, release page) of the newest bbport-plus release on GitHub."""
+    import urllib.request
+    request = urllib.request.Request(f'https://api.github.com/repos/{PLUS_REPO}/releases/latest',
+                                     headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'bbport-plus'})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        release = json.load(response)
+    return release['tag_name'], release.get('html_url') or f'https://github.com/{PLUS_REPO}/releases/latest'
 
 
 def memory_status():
@@ -300,7 +319,7 @@ class RunRecorder:
         if shutil.which('nvidia-smi'):
             gpu = run_tool(['nvidia-smi', '--query-gpu=name,driver_version,memory.total,power.limit',
                             '--format=csv,noheader'], 8).strip().replace('\r', '')
-        self.emit(f'=== bbport launcher v{self.version}, run {self.stamp} ===\n'
+        self.emit(f'=== bbport launcher v{self.version} (bbport-plus {PLUS_VERSION}), run {self.stamp} ===\n'
                   f'Windows {platform.version()}, {os.cpu_count()} logical CPUs, free RAM {avail_phys} MB, '
                   f'free commit {avail_commit} of {limit} MB\n'
                   f'NVIDIA: {gpu or "nvidia-smi not found"}\n'

@@ -37,18 +37,44 @@ Details and how to read the files: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
 
 仓库不含任何游戏文件,需要自备 1.09 版的解密转储。
 
-## Use it
+## Install
 
-The native part (`bin\bb-probe.exe` and its DLLs) is unchanged, so the quickest way is to take an upstream
-[release](https://github.com/Supermedo/bloodborne_pc/releases) and put this launcher over it:
+Download `Install-BBportPlus.ps1` from the [latest release](https://github.com/chenshuo-code/BBport-plus/releases/latest) and run
 
 ```powershell
-.\packaging\windows\build_launcher.ps1 -Package D:\Games\bbport-windows
+powershell -ExecutionPolicy Bypass -File .\Install-BBportPlus.ps1 -Destination D:\Games\bbport-plus
 ```
 
-This needs a Windows Python 3.10+; it builds `Bloodborne.exe` and `_internal\` with PyInstaller and copies them
-into the package folder. A full build of everything is described in the upstream README below.
+It downloads the official upstream package (`windows-v1.6`) from its own release page, checks its SHA-256,
+downloads the bbport-plus overlay of the release (also checked), and puts the launcher over the package. bbport-plus
+itself does not redistribute the upstream binaries, so NVIDIA's DLSS runtime and the other upstream parts come
+straight from upstream. The destination has to be on an **NTFS** drive (mods need links; exFAT cannot do that).
 
+Then start `Bloodborne.exe`, choose your game folder on *Game & effects* and press **PLAY**. To install by hand,
+unpack the upstream zip and unpack the release's `bbport-plus-<version>-overlay.zip` over its `bbport-windows`
+folder. Safe to read first: the script is plain PowerShell and is short.
+
+### 安装
+
+在[最新发行版](https://github.com/chenshuo-code/BBport-plus/releases/latest)下载 `Install-BBportPlus.ps1`,用上面的命令运行即可。
+脚本会从上游官方发行页下载 v1.6 并校验哈希,再叠加本项目的启动器;安装目录必须在 NTFS 磁盘上。游戏语言在启动器
+*Game & effects* 页选择,列表里有简体中文和繁体中文。
+
+## Build
+
+```powershell
+.\packaging\windows\build_launcher.ps1 -Package D:\Games\bbport-windows   # launcher only, over an upstream package
+.\packaging\windows\make_release.ps1 -Python C:\Python314\python.exe       # release files in dist\release\
+```
+
+Both need a Windows Python 3.10+. The native part is built as described in the upstream README below.
+
+## Reporting a problem
+
+Open an [issue](https://github.com/chenshuo-code/BBport-plus/issues/new/choose) and attach the newest
+`crash_<time>.txt` (crash) or `perf_events.log` (stutter) from `<saves folder>\logs\`, and say which graphics card
+and driver you use. Details: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md). Please do not attach game files.
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
 ## Staying in step with upstream
 
 The changes are in `launcher/bbport_launcher_win.py` (small hooks), the new `launcher/bbport_diag.py`,

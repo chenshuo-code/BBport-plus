@@ -13,7 +13,8 @@ so a packaged port needs no Python installation.
 
 Modified in bbport-plus on 2026-10-09 (GPL-2.0 section 2a notice; see CHANGELOG.md): game languages
 Chinese (Simplified, Traditional) and Korean, a log per run, crash reports and frame-drop records
-(bbport_diag.py), the --diag-report command, and no automatic update check.
+(bbport_diag.py), the --diag-report command, and an update check against this project's releases
+that only opens the release page.
 """
 import ctypes
 import json
@@ -456,8 +457,7 @@ class Launcher:
         root.protocol('WM_DELETE_WINDOW', self.close)
         root.after(100, self.drain_output)
         threading.Thread(target=self.detect_gpu, daemon=True).start()
-        # Fork build: an upstream update would replace this launcher (Chinese, run logs); checks are manual.
-        if self.app.get('check_updates', True) and not COOP_TEST and not bbport_diag.FORK_BUILD:
+        if self.app.get('check_updates', True) and not COOP_TEST:
             threading.Thread(target=self.check_update, daemon=True).start()
 
     def px(self, size):
@@ -1025,7 +1025,8 @@ class Launcher:
         ttk.Button(holder, text=_('Check for updates', 'Проверить обновления'),
                    command=lambda: threading.Thread(target=self.check_update, args=(True,), daemon=True).start()
                    ).pack(side='left')
-        ttk.Label(holder, text=f'v{VERSION}', style='Muted.TLabel').pack(side='left', padx=10)
+        ttk.Label(holder, text=f'v{VERSION} · bbport-plus {bbport_diag.PLUS_VERSION}',
+                  style='Muted.TLabel').pack(side='left', padx=10)
         holder = ttk.Frame(f)
         holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=(10, 0))
         ttk.Button(holder, text=_('Clear shader cache', 'Очистить кэш шейдеров'), command=self.clear_cache).pack(side='left')
@@ -1390,7 +1391,10 @@ class Launcher:
     def check_update(self, manual=False):
         """Helper thread: asks GitHub for the newest release and offers it when it is newer."""
         try:
-            version, url, page = latest_release()
+            # bbport-plus: the releases of this project; an update is a new overlay that is installed by
+            # hand or with Install-BBportPlus.ps1, so the launcher only opens the release page (url None).
+            version, page = bbport_diag.latest_plus_release()
+            url = None
         except (OSError, ValueError, KeyError) as failure:
             if manual:
                 self.ui_calls.put(lambda error=failure: self.messagebox.showerror(
@@ -1398,11 +1402,11 @@ class Launcher:
             return
 
         def show():
-            if version_tuple(version) > version_tuple(VERSION):
+            if bbport_diag.plus_key(version) > bbport_diag.plus_key(bbport_diag.PLUS_VERSION):
                 self.offer_update(version, url, page)
             elif manual:
                 self.messagebox.showinfo('Bloodborne', _('You have the latest version ({}).',
-                                                         'У вас последняя версия ({}).').format(VERSION))
+                                                         'У вас последняя версия ({}).').format(bbport_diag.PLUS_VERSION))
         self.ui_calls.put(show)
 
     def offer_update(self, version, url, page):
