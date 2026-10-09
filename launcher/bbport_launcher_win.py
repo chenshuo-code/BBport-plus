@@ -101,6 +101,7 @@ def run_command():
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bbport_lang  # noqa: E402
+import bbport_diag  # noqa: E402  (fork: run logs, crash reports, GPU telemetry)
 
 LANG = 'en'
 
@@ -113,6 +114,8 @@ def _(en, ru=None):
         return _(en[:-len(WARN)], ru and ru.removesuffix(WARN)) + WARN
     if LANG == 'ru':
         return ru or bbport_lang.table('ru').get(en) or en
+    if LANG == 'zh' and en in bbport_diag.ZH:  # fork texts
+        return bbport_diag.ZH[en]
     return bbport_lang.table(LANG).get(en) or en
 
 
@@ -169,7 +172,7 @@ APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'
                 'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': '1',
                 'player_name': '', 'fullscreen': False, 'hdr': False, 'present_mode': 'Mailbox',
                 'fps_mode': 'uncap', 'frame_cap': '', 'draw_pipe': '', 'readbacks': '',
-                'frames_ahead': '', 'frame_stats': False, 'gpu_profile': False,
+                'frames_ahead': '', 'frame_stats': False, 'gpu_profile': False, 'diagnostics': True,
                 'vk_validation': False, 'extra_env': '', 'close_on_play': False,
                 'check_updates': True, 'online': False, 'online_server': 'srv.shadps4.net:31313',
                 'online_webapi': '', 'online_npid': '', 'online_password': '', 'online_upnp': True,
@@ -196,7 +199,10 @@ PRESENT_MODES = [('Mailbox', ('Mailbox (low latency, no tearing)', 'Mailbox (б�
                  ('Immediate', ('Immediate (tearing)', 'Immediate (с разрывами)'))]
 LANGUAGES = [('1', ('English', 'Английский')), ('8', ('Russian', 'Русский')), ('0', ('Japanese', 'Японский')),
              ('2', ('French', 'Французский')), ('3', ('Spanish', 'Испанский')), ('4', ('German', 'Немецкий')),
-             ('5', ('Italian', 'Итальянский'))]
+             ('5', ('Italian', 'Итальянский')),
+             # fork: the game ships zhocn / zhotw / korkr; ids are the PS4 system language numbers
+             ('11', ('Chinese, Simplified (简体中文)',)), ('10', ('Chinese, Traditional (繁體中文)',)),
+             ('9', ('Korean (한국어)',))]
 DRAW_PIPE = [('', ('Auto (8+ threads)', 'Авто (8+ потоков)')), ('1', ('On', 'Включён')),
              ('0', ('Off (more stable)', 'Выключен (стабильнее)'))]
 READBACKS = [('', ('Relaxed (default)', 'Relaxed (по умолчанию)')), ('0', ('Off', 'Выключены')),
@@ -334,6 +340,38 @@ def server_check(server, webapi, community):
     return '\n'.join(lines)
 
 
+def logs_dir(settings):
+    """Where the run logs, crash reports and frame-drop records go (fork: bbport_diag.py)."""
+    return Path(settings.get('user_dir') or DATA_DIR / 'user') / 'logs'
+
+
+def make_recorder(settings):
+    base = Path(settings.get('user_dir') or DATA_DIR / 'user')
+    return bbport_diag.RunRecorder(base, settings, ini_path(), DATA_DIR, VERSION,
+                                   diagnostics=bool(settings.get('diagnostics', True)))
+
+
+def diag_report(settings, hours):
+    path = bbport_diag.collect_history(hours, logs_dir(settings))
+    if os.environ.get('BB_NO_DIALOG'):  # scripted tests
+        print(path)
+        return 0
+    ctypes.windll.user32.MessageBoxW(None, _('Report saved:\n{}').format(path), 'Bloodborne', 0x40)
+    os.startfile(str(path.parent))
+    return 0
+
+
+def crash_notice(code, report):
+    """After --play (no window): tells the player that a crash report was written."""
+    if os.environ.get('BB_NO_DIALOG'):  # scripted tests
+        return
+    text = _('The game ended abnormally (exit code {}).\nA crash report was saved:\n{}\n\n'
+             'Open the logs folder?').format(code, report)
+    # MB_YESNO | MB_ICONWARNING | MB_TOPMOST
+    if ctypes.windll.user32.MessageBoxW(None, text, 'Bloodborne', 0x4 | 0x30 | 0x40000) == 6:
+        os.startfile(str(Path(report).parent))
+
+
 def game_environment(s):
     env = dict(os.environ)
     env['BB_GAME_DIR'] = s['game_dir']
@@ -361,6 +399,8 @@ def game_environment(s):
                       ('vk_validation', 'BB_VK_VALIDATION')):
         if s[key]:
             env[name] = '1'
+    if s.get('diagnostics', True):  # fork: the frame statistics feed the drop / stall records
+        env['BB_FRAME_STATS'] = '1'
     for item in str(s['extra_env']).split():
         if '=' in item:
             key, value = item.split('=', 1)
@@ -412,7 +452,8 @@ class Launcher:
         root.protocol('WM_DELETE_WINDOW', self.close)
         root.after(100, self.drain_output)
         threading.Thread(target=self.detect_gpu, daemon=True).start()
-        if self.app.get('check_updates', True) and not COOP_TEST:
+        # Fork build: an upstream update would replace this launcher (Chinese, run logs); checks are manual.
+        if self.app.get('check_updates', True) and not COOP_TEST and not bbport_diag.FORK_BUILD:
             threading.Thread(target=self.check_update, daemon=True).start()
 
     def px(self, size):
@@ -994,6 +1035,13 @@ class Launcher:
                  _('How exactly data the GPU writes is copied back for the game.',
                    'Насколько точно данные, записанные GPU, возвращаются игре.'))
         self.section(f, _('Diagnostics', 'Для разработчика'))
+        self.check(f, 'diagnostics', 'app', _('Record crash reports, GPU data and frame drops (recommended)'))
+        holder = ttk.Frame(f)
+        holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=(4, 8))
+        ttk.Button(holder, text=_('Open logs folder'),
+                   command=lambda: self.open_path(logs_dir(self.app))).pack(side='left')
+        ttk.Button(holder, text=_('Collect crash history (72 h)'),
+                   command=lambda: diag_report(self.app, 72)).pack(side='left', padx=6)
         self.check(f, 'frame_stats', 'app', _('Frame statistics in the log (every 5 s)', 'Статистика кадров в журнале (раз в 5 с)'))
         self.check(f, 'gpu_profile', 'app', _('GPU time per pass in the log', 'Профиль GPU в журнале'))
         self.check(f, 'vk_validation', 'app', _('Vulkan validation layers (needs the Vulkan SDK; much slower)',
@@ -1250,7 +1298,8 @@ class Launcher:
             self.process = None
             return
         self.job = GameJob(self.process)
-        threading.Thread(target=self.read_output, args=(self.process,), daemon=True).start()
+        self.recorder = make_recorder(self.app)
+        threading.Thread(target=self.read_output, args=(self.process, self.recorder), daemon=True).start()
         self.play_button.configure(state='disabled')
         self.stop_button.configure(state='normal')
         self.status.configure(text=_('Preparing the game; it opens in its own window…',
@@ -1258,23 +1307,18 @@ class Launcher:
         if self.app.get('close_on_play'):
             self.root.after(5000, self.root.destroy)  # the game keeps running
 
-    def read_output(self, process):
-        """Helper thread: the game's output to the Log page and to <saves folder>/last_run.log."""
-        log = None
-        try:
-            log_dir = Path(self.app.get('user_dir') or DATA_DIR / 'user')
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log = open(log_dir / 'last_run.log', 'w', encoding='utf-8', buffering=1)
-        except OSError:
-            pass
+    def read_output(self, process, recorder):
+        """Helper thread: the game's output to the Log page and to the run recorder (a log per run in
+        <saves folder>/logs, <saves folder>/last_run.log, crash reports, frame-drop records)."""
         for raw in iter(process.stdout.readline, b''):
             text = raw.decode('utf-8', errors='replace')
             self.output.put(text)
-            if log:
-                log.write(text.replace('\r\n', '\n'))
-        if log:
-            log.close()
-        self.output.put((process.wait(),))
+            recorder.feed(text)
+        code = process.wait()
+        report = recorder.finish(code)
+        if report:
+            self.output.put(_('Crash report saved: {}').format(report) + '\n')
+        self.output.put((code,))
 
     def drain_output(self):
         while not self.ui_calls.empty():
@@ -1300,6 +1344,8 @@ class Launcher:
         self.root.after(100, self.drain_output)
 
     def stop(self):
+        if getattr(self, 'recorder', None):
+            self.recorder.user_stopped = True
         if self.job:
             self.job.terminate()
 
@@ -1531,20 +1577,22 @@ def play_without_window(settings):
     """--play: the game with the saved settings (shortcuts, Steam). Output goes to the console
     when there is one and to <saves folder>/last_run.log."""
     attach_stdio()
-    log_dir = Path(settings.get('user_dir') or DATA_DIR / 'user')
-    log_dir.mkdir(parents=True, exist_ok=True)
-    with open(log_dir / 'last_run.log', 'w', encoding='utf-8', buffering=1) as log:
-        process = subprocess.Popen(run_command(), cwd=PORT_DIR, env=game_environment(settings),
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
-        for raw in iter(process.stdout.readline, b''):
-            text = raw.decode('utf-8', errors='replace')
-            log.write(text)
-            try:
-                sys.stdout.write(text)
-            except (OSError, ValueError):
-                pass
-        return process.wait()
+    recorder = make_recorder(settings)
+    process = subprocess.Popen(run_command(), cwd=PORT_DIR, env=game_environment(settings),
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
+    for raw in iter(process.stdout.readline, b''):
+        text = raw.decode('utf-8', errors='replace')
+        recorder.feed(text)
+        try:
+            sys.stdout.write(text)
+        except (OSError, ValueError):
+            pass
+    code = process.wait()
+    report = recorder.finish(code)
+    if report:
+        crash_notice(code, report)
+    return code
 
 
 def version_tuple(text):
@@ -1599,6 +1647,8 @@ def main():
     LANG = settings.get('ui_language') or windows_language()
     if args[:1] == ['--install-update'] and len(args) == 3:
         sys.exit(install_update(args[1], args[2]))
+    if args[:1] == ['--diag-report']:  # fork: what Windows recorded about crashes, any graphics card
+        sys.exit(diag_report(settings, int(args[1]) if len(args) > 1 and args[1].isdigit() else 72))
     if FROZEN and UPDATE_DIR not in PORT_DIR.parents:
         shutil.rmtree(UPDATE_DIR, ignore_errors=True)  # what a finished update left behind
     # Without a usable game folder there is nothing to play yet: open the launcher instead.

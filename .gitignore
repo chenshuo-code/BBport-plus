@@ -24,3 +24,15 @@ perf.data
 mods.json
 patches.json
 !launcher/bloodborne.png
+
+# bbport-plus: never commit game material or generated game images
+CUSA*/
+dvdroot_ps4/
+eboot.bin
+eboot.elf
+boot*.bin
+*.pkg
+SaveData/
+logs/
+diag_report_*.txt
+crash_*.txt

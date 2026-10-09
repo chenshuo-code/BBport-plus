@@ -1,3 +1,66 @@
+# bbport-plus
+
+A Windows fork of [Supermedo/bloodborne_pc](https://github.com/Supermedo/bloodborne_pc) (which is built on
+[deadinside28's bbport](https://github.com/deadinside28/bloodborne_pc)), aimed at **finding the cause of crashes
+and stutter** and at players who use Chinese. Same licence as upstream: GPL-2.0-or-later. Based on upstream
+`windows-v1.6` (commit `e076119`); see [CHANGELOG.md](CHANGELOG.md).
+
+> **No game files are included, and none belong in this repository.** You need your own decrypted dump of
+> Bloodborne (game version 1.09). This project is not affiliated with Sony Interactive Entertainment or
+> FromSoftware.
+
+## What this fork adds
+
+- **Chinese (Simplified and Traditional) and Korean** in the launcher's *Game language* list.
+- **One log per run** (upstream overwrote `last_run.log` on every start, so the log of a crash was gone after the
+  next launch), kept in `<saves folder>\logs\`.
+- **Automatic crash report** when the game ends abnormally: exit code, the runtime's fault lines, the last output,
+  GPU and memory state, graphics adapters, and the matching Windows event log entries (application errors, graphics
+  driver resets, low memory).
+- **Frame-drop and stutter records**: every fall from a steady 55+ FPS to under 40, and every frame over 40 ms with
+  the game's own breakdown (shader compiles, texture uploads). Works with any GPU; NVIDIA cards also log
+  temperature, power and throttle reasons.
+- `tools/windows/Collect_Crash_History.bat`: exports what Windows recorded about crashes and driver resets from
+  before the logs existed. It needs nothing but Windows.
+
+Details and how to read the files: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
+
+### 中文说明
+
+这是 bloodborne_pc(Windows 原生移植)的分支,重点是**定位闪退和卡顿的原因**:
+
+- 启动器的游戏语言增加简体中文、繁体中文、韩语。
+- 每次运行单独保存日志,不再被下一次启动覆盖;日志在存档目录的 `logs\` 下。
+- 游戏异常退出时自动生成崩溃报告(退出码、故障行、显卡和内存状态、Windows 事件日志中的相关记录)。
+- 自动记录帧率从稳定 55 以上掉到 40 以下的时刻,以及每一个超过 40 ms 的卡顿帧。任意显卡可用。
+- `tools/windows/Collect_Crash_History.bat`:不依赖游戏,导出 Windows 对闪退和显卡驱动重置的记录。
+
+仓库不含任何游戏文件,需要自备 1.09 版的解密转储。
+
+## Use it
+
+The native part (`bin\bb-probe.exe` and its DLLs) is unchanged, so the quickest way is to take an upstream
+[release](https://github.com/Supermedo/bloodborne_pc/releases) and put this launcher over it:
+
+```powershell
+.\packaging\windows\build_launcher.ps1 -Package D:\Games\bbport-windows
+```
+
+This needs a Windows Python 3.10+; it builds `Bloodborne.exe` and `_internal\` with PyInstaller and copies them
+into the package folder. A full build of everything is described in the upstream README below.
+
+## Staying in step with upstream
+
+The changes are in `launcher/bbport_launcher_win.py` (small hooks), the new `launcher/bbport_diag.py`,
+`packaging/windows/build_launcher.ps1`, `tools/windows/` and the documents. To take a newer upstream version:
+
+```bash
+git remote add upstream https://github.com/Supermedo/bloodborne_pc.git
+git fetch upstream windows
+git merge upstream/windows
+```
+
+---
 # Bloodborne for Windows
 
 **Bloodborne running natively on Windows 10 and 11, by [Supermedo](https://github.com/Supermedo) Mohammed Albarghouthi.**
