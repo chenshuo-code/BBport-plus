@@ -52,8 +52,22 @@ Changes and how to read the logs: CHANGELOG.md, docs\DIAGNOSTICS.md. Licence: GP
 
 $overlayName = "bbport-plus-$version-overlay.zip"
 $overlay = Join-Path $out $overlayName
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-[IO.Compression.ZipFile]::CreateFromDirectory($stage, $overlay, [IO.Compression.CompressionLevel]::Optimal, $false)
+# Written by hand: Windows PowerShell's own zip helpers store paths with backslashes, which the zip format forbids.
+Add-Type -AssemblyName System.IO.Compression
+$zipFile = [IO.File]::Open($overlay, [IO.FileMode]::Create)
+$zip = New-Object IO.Compression.ZipArchive($zipFile, [IO.Compression.ZipArchiveMode]::Create)
+foreach ($file in Get-ChildItem $stage -Recurse -File) {
+    $name = $file.FullName.Substring($stage.Length + 1).Replace('\', '/')
+    $entry = $zip.CreateEntry($name, [IO.Compression.CompressionLevel]::Optimal)
+    $entry.LastWriteTime = $file.LastWriteTime
+    $in = [IO.File]::OpenRead($file.FullName)
+    $outStream = $entry.Open()
+    $in.CopyTo($outStream)
+    $outStream.Dispose()
+    $in.Dispose()
+}
+$zip.Dispose()
+$zipFile.Dispose()
 $overlayHash = (Get-FileHash $overlay -Algorithm SHA256).Hash
 
 $template = Get-Content (Join-Path $root 'tools\windows\Install-BBportPlus.ps1.in') -Raw
