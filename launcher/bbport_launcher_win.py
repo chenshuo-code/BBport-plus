@@ -669,6 +669,7 @@ class Launcher:
         self.nav, self.current_page = {}, None
         for name, title in (('play', _('Play', 'Играть')), ('graphics', _('Graphics', 'Графика')),
                             ('display', _('Display & FPS', 'Экран и FPS')), ('game', _('Game & effects', 'Игра и эффекты')),
+                            ('saves', _('Saves')),
                             ('cheats', _('Cheats', 'Читы')), ('online', _('Online co-op', 'Онлайн-кооператив')),
                             ('mods', _('Mods & patches', 'Моды и патчи')),
                             ('advanced', _('Advanced', 'Дополнительно')),
@@ -707,6 +708,7 @@ class Launcher:
         self.build_graphics()
         self.build_display()
         self.build_game()
+        self.build_saves()
         self.build_cheats()
         self.build_online()
         self.build_mods()
@@ -735,6 +737,8 @@ class Launcher:
             self.refresh_fsr4()
         elif name == 'play':
             self.refresh_status()
+        elif name == 'saves':
+            self.refresh_saves()
 
     def build_play(self):
         tk, ttk = self.tk, self.ttk
@@ -918,6 +922,94 @@ class Launcher:
             self.check(f, key, 'ini', _(*title))
         self.note(f, _('Effects and extras are game patches for version 1.09, applied at start.',
                        'Эффекты и дополнения — патчи игры для версии 1.09, применяются при запуске.'))
+
+    # ---- saves page (fork) -------------------------------------------------------------------
+    def saves_user_dir(self):
+        return Path(self.var('user_dir', 'app').get() or DATA_DIR / 'user')
+
+    def build_saves(self):
+        tk, ttk = self.tk, self.ttk
+        f = self.scrolled_page('saves', _('Saves'),
+                               _('Backups of your saves: when the game starts, every 10 minutes of play when they '
+                                 'changed, and when it exits. The newest 10 are kept.'))
+        self.section(f, _('Backups'), top=4)
+        holder = ttk.Frame(f)
+        holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='we', pady=(4, 0))
+        self.saves_list = tk.Listbox(holder, height=12, width=52, bg='#15120f', fg=TEXT, selectbackground='#5a1a1a',
+                                     selectforeground='#f3e9e0', highlightthickness=0, borderwidth=0,
+                                     font=('Segoe UI', 10), activestyle='none', exportselection=False)
+        bar = ttk.Scrollbar(holder, orient='vertical', command=self.saves_list.yview)
+        self.saves_list.configure(yscrollcommand=bar.set)
+        self.saves_list.pack(side='left', fill='both', expand=True)
+        bar.pack(side='left', fill='y')
+        self.saves_rows = []
+        buttons = ttk.Frame(f)
+        buttons.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=(8, 0))
+        ttk.Button(buttons, text=_('Restore selected'), command=self.restore_save).pack(side='left')
+        ttk.Button(buttons, text=_('Back up now'), command=self.backup_now).pack(side='left', padx=(8, 0))
+        ttk.Button(buttons, text=_('Refresh'), command=self.refresh_saves).pack(side='left', padx=(8, 0))
+        ttk.Button(buttons, text=_('Open folder'),
+                   command=lambda: self.open_path(str(self.saves_user_dir() / 'save_backups'), 'save_backups')).pack(
+            side='left', padx=(8, 0))
+        self.saves_note = ttk.Label(f, text='', style='Muted.TLabel', wraplength=self.px(680), justify='left')
+        self.saves_note.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=(8, 0))
+        self.note(f, _('Restoring replaces the current saves with the chosen backup; the current ones are backed up '
+                       'first. Close the game before restoring.'))
+
+    def refresh_saves(self):
+        root = self.saves_user_dir() / 'save_backups'
+        self.saves_list.delete(0, 'end')
+        self.saves_rows = []
+        reasons = {'play': _('while playing'), 'exit': _('at exit'), 'before_restore': _('before a restore'),
+                   'manual': _('manual')}
+        folders = sorted((p for p in root.glob('*') if (p / 'savedata').is_dir()), key=lambda p: p.name, reverse=True) \
+            if root.is_dir() else []
+        for p in folders:
+            stamp, _sep, reason = p.name.partition('_')
+            stamp2, _sep2, reason2 = reason.partition('_')
+            when = f'{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp2[:2]}:{stamp2[2:4]}:{stamp2[4:6]}' \
+                if len(stamp) == 8 and len(stamp2) == 6 else p.name
+            self.saves_list.insert('end', f'{when}    {reasons.get(reason2, reason2)}')
+            self.saves_rows.append(p)
+        if not folders:
+            self.saves_list.insert('end', _('(no backups yet: they appear once the game has run)'))
+        self.saves_note.configure(text=_('Saves folder: {}').format(self.saves_user_dir() / 'savedata'))
+
+    def game_is_running(self):
+        if self.process and self.process.poll() is None:
+            return True
+        out = bbport_diag.run_tool(['tasklist', '/FI', 'IMAGENAME eq bb-probe.exe', '/FO', 'CSV', '/NH'], 8)
+        return 'bb-probe.exe' in out
+
+    def backup_now(self):
+        made = bbport_diag.backup_saves(self.saves_user_dir(), 'manual', settle=0.0)
+        self.saves_note.configure(text=_('Backed up: {}').format(made) if made else
+                                  _('Nothing to back up (no saves, or identical to the newest backup).'))
+        self.refresh_saves()
+
+    def restore_save(self):
+        chosen = self.saves_list.curselection()
+        if not chosen or chosen[0] >= len(self.saves_rows):
+            self.saves_note.configure(text=_('Choose a backup in the list first.'))
+            return
+        if self.game_is_running():
+            self.messagebox.showwarning('Bloodborne', _('Close the game first: it would overwrite the restored saves.'))
+            return
+        backup = self.saves_rows[chosen[0]]
+        label = self.saves_list.get(chosen[0])
+        if not self.messagebox.askyesno('Bloodborne', _('Restore the saves from this backup?\n\n{}\n\nThe current saves '
+                                                        'are backed up first.').format(label)):
+            return
+        user = self.saves_user_dir()
+        kept = bbport_diag.backup_saves(user, 'before_restore', settle=0.0)
+        try:
+            shutil.copytree(backup / 'savedata', user / 'savedata', dirs_exist_ok=True)
+        except OSError as error:
+            self.messagebox.showerror('Bloodborne', _('Restore failed: {}').format(error))
+            return
+        self.saves_note.configure(text=_('Restored {} (the previous saves are in {}).').format(
+            label, kept.name if kept else _('the newest backup')))
+        self.refresh_saves()
 
     def build_cheats(self):
         f = self.scrolled_page('cheats', _('Cheats', 'Читы'),

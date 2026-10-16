@@ -87,6 +87,28 @@ SECRET_KEYS = ('online_password', 'online_npid', 'online_server', 'online_webapi
 
 # Launcher texts added by this fork (Simplified Chinese); other languages fall back to English.
 ZH = {
+    'Saves': '存档',
+    'Backups of your saves: when the game starts, every 10 minutes of play when they changed, and when it exits. '
+    'The newest 10 are kept.': '存档备份:游戏启动时、游玩中每 10 分钟(有变化时)、退出时各备份一次,保留最近 10 份。',
+    'Backups': '备份列表',
+    'Restore selected': '恢复所选',
+    'Back up now': '立即备份',
+    'Refresh': '刷新',
+    'Open folder': '打开文件夹',
+    'Restoring replaces the current saves with the chosen backup; the current ones are backed up first. '
+    'Close the game before restoring.': '恢复会用所选备份覆盖当前存档,覆盖前会先把当前存档再备份一份。恢复前请先关闭游戏。',
+    'while playing': '游戏中', 'at exit': '退出时', 'before a restore': '恢复前', 'manual': '手动',
+    '(no backups yet: they appear once the game has run)': '(还没有备份:游戏运行过后会出现)',
+    'Saves folder: {}': '存档位置:{}',
+    'Backed up: {}': '已备份:{}',
+    'Nothing to back up (no saves, or identical to the newest backup).': '没有可备份的内容(没有存档,或和最新备份完全相同)。',
+    'Choose a backup in the list first.': '请先在列表里选一份备份。',
+    'Close the game first: it would overwrite the restored saves.': '请先关闭游戏,否则它会覆盖恢复后的存档。',
+    'Restore the saves from this backup?\n\n{}\n\nThe current saves are backed up first.':
+        '用这份备份恢复存档?\n\n{}\n\n当前存档会先备份一份。',
+    'Restore failed: {}': '恢复失败:{}',
+    'Restored {} (the previous saves are in {}).': '已恢复 {}(之前的存档在 {} 里)。',
+    'the newest backup': '最新的备份',
     'Record crash reports, GPU data and frame drops (recommended)': '记录崩溃报告、显卡数据和掉帧(推荐)',
     'Open logs folder': '打开日志文件夹',
     'Collect crash history (72 h)': '收集崩溃历史(72 小时)',
