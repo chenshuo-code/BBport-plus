@@ -47,8 +47,8 @@ NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 # This build; GitHub release tags are windows-v<VERSION>.
 VERSION = '1.6'
 # bbport-plus: this fork's release on top of the upstream version, its author, and its source.
-PLUS_VERSION = 'plus.4'
-FULL_VERSION = f'{VERSION}-{PLUS_VERSION}'
+PLUS_VERSION = '0.4.1'   # keep equal to bbport_diag.PLUS_VERSION (the release script reads that one)
+FULL_VERSION = f'{PLUS_VERSION} (bbport {VERSION})'
 AUTHOR = 'GameOClock'
 SOURCE_PAGE = 'https://github.com/chenshuo-code/BBport-plus'
 # Co-op: the community server that answers the game's own server requests.
@@ -1222,7 +1222,7 @@ class Launcher:
                'при нестабильности закройте их. Игра проверена на AMD Radeon RX 7900 XT и картах NVIDIA RTX.'))
 
         self.section(f, _('This build', 'Эта сборка'))
-        text(f, _('Version', 'Версия'), f'bbport-plus {FULL_VERSION}  ·  ' + _('based on upstream windows-v{}', 'на основе upstream windows-v{}').format(VERSION))
+        text(f, _('Version', 'Версия'), f'bbport-plus {PLUS_VERSION}  ·  ' + _('based on upstream windows-v{}', 'на основе upstream windows-v{}').format(VERSION))
         text(f, _('Author', 'Автор'), AUTHOR)
         text(f, _('License', 'Лицензия'),
              _('GPL-2.0-or-later. The source code of this build, its changes and the full credits are on GitHub.',

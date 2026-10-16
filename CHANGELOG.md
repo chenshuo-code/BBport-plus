@@ -4,7 +4,11 @@ bbport-plus follows [Supermedo/bloodborne_pc](https://github.com/Supermedo/blood
 upstream version it is based on. Versions look like `<upstream version>-plus.<n>`; dates are release dates.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 1.6-plus.4 (unreleased; based on upstream windows-v1.6, commit e076119)
+## bbport-plus 0.4.1 (unreleased; based on upstream windows-v1.6, commit e076119)
+
+Versions: `bbport-plus-0.x` while the fork is still being stabilised, `1.x` from the first stable release,
+`2.x` for a large change. Each stable state is committed and tagged `bbport-plus-<version>`; the three
+`1.6-plus.N` test releases below came before this scheme.
 
 bbport-plus is maintained by **GameOClock**. It builds on the work of Super Medo (the Windows port),
 deadinside28 (bbport itself), AdrianCsT and the shadPS4 project; the launcher's *About* page and the
@@ -31,7 +35,7 @@ entries below name what was taken from where.
 - An **About** page in the launcher: the requirements (game dump 1.09, Windows, graphics card, processor,
   memory and the page file, disk), this build's version, author and license with links to the source and
   the changes, and the projects it builds on. The sidebar names the author and the full version
-  (`1.6-plus.4`), which the crash reports carry too.
+  (`0.4.1 (bbport 1.6)`), which the crash reports carry too.
 - From [AdrianCsT/bloodborne_pc](https://github.com/AdrianCsT/bloodborne_pc) (GPL-2.0-or-later):
   - The AMD device loss with object motion vectors: the motion varyings sat at locations 30/31, past
     the 128-component interface limit once built-ins are counted, and AMD's driver did not survive it;

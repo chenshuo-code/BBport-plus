@@ -1,11 +1,11 @@
 # Builds the bbport-plus release files in dist\release\:
 #   bbport-plus-<version>-overlay.zip   the launcher (Bloodborne.exe + _internal) with docs and tools
 #   Install-BBportPlus.ps1              downloads the pinned upstream package and puts the overlay over it
-#   SHA256SUMS.txt, RELEASE_NOTES.md    checksums and the notes of this release (docs\releases\v<version>.md)
+#   SHA256SUMS.txt, RELEASE_NOTES.md    checksums and the notes of this release (docs\releases\bbport-plus-<version>.md)
 #
 #   .\packaging\windows\make_release.ps1 -Python C:\Python314\python.exe
 #
-# The version is PLUS_VERSION in launcher\bbport_diag.py; the tag to create is v<version>.
+# The version is PLUS_VERSION in launcher\bbport_diag.py; the tag to create is bbport-plus-<version>.
 # Release from a clean, committed tree: the binary is then reproducible from the tag.
 param([string]$Python = 'python')
 $ErrorActionPreference = 'Stop'
@@ -20,7 +20,7 @@ $diag = Get-Content (Join-Path $root 'launcher\bbport_diag.py') -Raw
 $version = [regex]::Match($diag, "PLUS_VERSION\s*=\s*'([^']+)'").Groups[1].Value
 $repo = [regex]::Match($diag, "PLUS_REPO\s*=\s*'([^']+)'").Groups[1].Value
 if (-not $version -or -not $repo) { throw 'PLUS_VERSION / PLUS_REPO not found in launcher\bbport_diag.py' }
-$tag = "v$version"
+$tag = "bbport-plus-$version"
 $notesFile = Join-Path $root "docs\releases\$tag.md"
 if (-not (Test-Path $notesFile)) { throw "Write the release notes first: docs\releases\$tag.md" }
 

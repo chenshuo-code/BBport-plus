@@ -32,7 +32,9 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-PLUS_VERSION = '1.6-plus.4'   # bbport-plus release; the part before '-plus' is the upstream version it is based on
+PLUS_VERSION = '0.4.1'        # bbport-plus version (git tag bbport-plus-<version>): 0.x until the first stable
+                              # release, 1.x from then on, 2.x for a large change. The upstream bbport
+                              # version it is built on is VERSION in bbport_launcher_win.py.
 PLUS_REPO = 'chenshuo-code/BBport-plus'
 KEEP_RUNS = 10          # runs that ended normally: logs kept (older ones are deleted with their csv files)
 KEEP_CRASHES = 10       # crashes kept, each with the crash report and every file of that run
@@ -275,11 +277,16 @@ def system_game_language(lang_id=None):
     return GAME_LANGUAGES.get(primary, '1')
 
 def plus_key(text):
-    """Sort key of a bbport-plus tag such as v1.6-plus.1 -> ((1, 6), 1); unknown tags sort first."""
-    match = re.match(r'v?(\d+(?:\.\d+)*)-plus\.(\d+)', text or '')
-    if not match:
-        return ((0,), 0)
-    return (tuple(int(n) for n in match.group(1).split('.')), int(match.group(2)))
+    """Sort key of a bbport-plus version or tag: 'bbport-plus-0.4.1', 'v0.4.1' or '0.4.1' -> (0, 4, 1).
+    The old tags v1.6-plus.N sort as (0, N, 0); unknown text sorts first."""
+    text = (text or '').strip()
+    match = re.match(r'(?:bbport-plus-|v)?(\d+(?:\.\d+)*)$', text)
+    if match:
+        return tuple(int(n) for n in match.group(1).split('.'))
+    match = re.match(r'v?\d+(?:\.\d+)*-plus\.(\d+)$', text)
+    if match:
+        return (0, int(match.group(1)), 0)
+    return (0,)
 
 
 def latest_plus_release():
