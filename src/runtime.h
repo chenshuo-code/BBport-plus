@@ -18,6 +18,8 @@ void runtime_restart(void);
 #define ABI __attribute__((sysv_abi))
 typedef void (ABI *GuestCallback)(void);
 void runtime_start(uint64_t capabilities);
+/* runtime_gxtrace.c: records who allocates from the renderer frame heaps (docs/GX_FRAME_HEAP.md). */
+void runtime_gxtrace_install(unsigned char *image, uint64_t image_size);
 uintptr_t runtime_resolve(const char *name, int is_data);
 void runtime_report(void);
 void runtime_finalize(void *dso);

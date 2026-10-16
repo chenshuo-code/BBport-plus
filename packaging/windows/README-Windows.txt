@@ -15,11 +15,10 @@ Starting
 - Bloodborne.exe opens the launcher. On "Game & effects" pick your game folder, adjust the
   settings, press PLAY. The "Play" page checks the game version, saves, graphics card and
   FSR 4 assets.
-- Play Bloodborne.exe starts the game straight away with the settings saved in the launcher,
-  without opening it. Set things up once in Bloodborne.exe, then use Play Bloodborne.exe (or a
-  shortcut to it, or "Add to Steam" on the Play page). If no game folder is chosen
-  yet it opens the launcher. Bloodborne.exe --play does the same. The log goes to
-  user\last_run.log.
+- "Bloodborne.exe --play" starts the game straight away with the settings saved in the
+  launcher, without opening it. Set things up once in Bloodborne.exe, then use "Add to Steam"
+  on the Play page or a shortcut to Bloodborne.exe with --play as its argument. If no game
+  folder is chosen yet it opens the launcher. The log goes to user\last_run.log.
 - Advanced -> "Desktop shortcut" puts Bloodborne on the desktop.
 - Updates: when a new version is out, the launcher shows it at the bottom left; "Update"
   downloads and installs it and opens the launcher again (saves, settings and mods are kept).

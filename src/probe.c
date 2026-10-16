@@ -12,6 +12,8 @@
 #endif
 #ifdef _WIN32
 #include <windows.h>
+#include <dbghelp.h>
+#include <timeapi.h>
 #else
 #include <sys/mman.h>
 #include <malloc.h>
@@ -111,6 +113,26 @@ static void describe_address(char *out, size_t size, uintptr_t address) {
     snprintf(out,size,"%p",(void *)address);
 }
 static int fatal_reported;
+/* bbport: a minidump next to the run logs (<user dir>\\logs\\fault_<time>.dmp): registers and stacks
+ * of every thread, the faulting one marked, and the memory the stacks point to. The launcher keeps
+ * the newest three. Reading one: minidump.py / WinDbg / Visual Studio. */
+static void write_minidump(EXCEPTION_POINTERS *info) {
+    const char *user=getenv("BB_USER_DIR");
+    char path[MAX_PATH];
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    snprintf(path,sizeof(path),"%s\\logs\\fault_%04u%02u%02u_%02u%02u%02u.dmp",user && *user ? user : "user",
+             t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
+    HANDLE file=CreateFileA(path,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+    if (file==INVALID_HANDLE_VALUE) { fprintf(stderr,"  minidump: cannot create %s (error %lu)\n",path,GetLastError()); return; }
+    MINIDUMP_EXCEPTION_INFORMATION exception={GetCurrentThreadId(),info,FALSE};
+    BOOL ok=MiniDumpWriteDump(GetCurrentProcess(),GetCurrentProcessId(),file,
+                              (MINIDUMP_TYPE)(MiniDumpWithIndirectlyReferencedMemory|MiniDumpWithThreadInfo|
+                                              MiniDumpWithDataSegs|MiniDumpWithHandleData),
+                              &exception,NULL,NULL);
+    CloseHandle(file);
+    fprintf(stderr,"  minidump: %s%s\n",path,ok ? "" : " (MiniDumpWriteDump failed)");
+}
 static LONG fatal_exception(EXCEPTION_POINTERS *info) {
     if (__atomic_exchange_n(&fatal_reported,1,__ATOMIC_ACQ_REL)) { Sleep(INFINITE); }
     const EXCEPTION_RECORD *record=info->ExceptionRecord;
@@ -136,6 +158,22 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
         fprintf(stderr,"  #%d %s\n",depth,where);
         rbp=frame[0];
     }
+    /* bbport: system DLLs keep no frame pointers (a C++ throw raised in KERNELBASE showed
+     * rbp=1 and no frames above), so walk the x64 unwind tables too, and name the thread. */
+    typedef HRESULT (WINAPI *ThreadDescription)(HANDLE,PWSTR *);
+    ThreadDescription describe_thread=(ThreadDescription)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"),"GetThreadDescription");
+    PWSTR thread_name=NULL;
+    if (describe_thread && SUCCEEDED(describe_thread(GetCurrentThread(),&thread_name)) && thread_name) {
+        fprintf(stderr,"  thread name: %ls\n",thread_name);
+        LocalFree(thread_name);
+    }
+    void *unwound[48];
+    const USHORT unwound_count=RtlCaptureStackBackTrace(0,48,unwound,NULL);
+    for (USHORT i=0;i<unwound_count;++i) {
+        describe_address(where,sizeof(where),(uintptr_t)unwound[i]);
+        fprintf(stderr,"  @%u %s\n",(unsigned)i,where);
+    }
+    write_minidump(info);
     fflush(NULL);
     TerminateProcess(GetCurrentProcess(),3);
     return EXCEPTION_CONTINUE_SEARCH;
@@ -379,6 +417,12 @@ void runtime_restart(void) {
 
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
+#ifdef _WIN32
+    /* bbport: 1 ms timer resolution for this process. Since Windows 10 2004 it is per process
+       (the launcher's own request does not reach the game), and without it a sleep can overshoot
+       by 15.6 ms: the frame generation wait between the two presents relies on it. */
+    timeBeginPeriod(1);
+#endif
 #ifndef _WIN32
     /* Keep host heap objects handed to the guest (thread handles, TLS) in the
        non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */
@@ -604,6 +648,7 @@ int main(int argc, char **argv) {
         memcpy(image + relocs[i].target, &value, 8);
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
+    runtime_gxtrace_install(image, size);
 #ifdef _WIN32
     printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
 #endif

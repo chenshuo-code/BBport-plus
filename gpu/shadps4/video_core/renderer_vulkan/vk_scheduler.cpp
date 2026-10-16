@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <cstring>
+#include <chrono>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <thread>
 #include <algorithm>
 #include <cstdio>
@@ -28,6 +34,8 @@ std::mutex Scheduler::submit_mutex;
 
 Scheduler::Scheduler(const Instance& instance, bool threaded_recording)
     : instance{instance}, work_semaphore{instance}, command_pool{instance, &work_semaphore} {
+    crumb_stream = Breadcrumbs::NewStream(
+        instance, threaded_recording ? "draws: game and presenter" : "presentation");
     // bbport: BB_VK_RECORD_THREAD=0 records on the calling thread.
     const char* env = std::getenv("BB_VK_RECORD_THREAD");
     if (threaded_recording && !(env && env[0] == '0')) {
@@ -62,6 +70,25 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
     EndRendering();
     is_rendering = true;
     render_state = new_state;
+    // bbport: a depth/stencil attachment without a view is invalid usage (the AMD driver read a
+    // null object inside vkCmdBeginRendering, 2026-10-15): it is dropped here, and a pass never
+    // asks for zero layers. The first eight cases are reported.
+    {
+        auto& ds = render_state.depth_stencil_attachment;
+        if ((ds.has_depth || ds.has_stencil) && !ds.image_view) {
+            static u32 warned = 0;
+            if (warned++ < 8) {
+                std::printf("GPU: render pass %ux%u with a depth/stencil attachment but no view: "
+                            "the attachment is dropped\n",
+                            render_state.width, render_state.height);
+            }
+            ds.has_depth = false;
+            ds.has_stencil = false;
+        }
+        if (render_state.num_layers == 0) {
+            render_state.num_layers = 1;
+        }
+    }
 
     std::array<vk::RenderingAttachmentInfo, 8> color_attachments;
     for (u32 i = 0; i < render_state.num_color_attachments; ++i) {
@@ -232,20 +259,26 @@ void Scheduler::KickRecording(bool force) {
     // Callers kick where nobody holds the raw command buffer: deferral resumes.
     direct_mode = false;
     // Batches of tens of KiB keep the queue handoff cheap relative to the work it carries.
-    if (!force && full_chunks.empty() && record_chunk->Size() < 32 * 1024) {
+    if (!force && full_chunks.empty() && CurrentChunk().Size() < 32 * 1024) {
         return;
     }
-    if (full_chunks.empty() && record_chunk->Empty()) {
+    if (full_chunks.empty() && CurrentChunk().Empty()) {
         return;
     }
+    // bbport: the chunk that takes the current one's place is taken first (AcquireChunk locks
+    // recorder_mutex) and swapped in below, so record_chunk is never null: the draw pipeline's
+    // recording thread faulted in RecordChunk::Push on a null chunk at the end of a boss fight
+    // (2026-10-16). From Mrsuss60/bbport 196ba93 (their issue #100).
+    std::unique_ptr<RecordChunk> next_record = record_chunk->Empty() ? nullptr : AcquireChunk();
     bool wake;
     {
         std::scoped_lock lk{recorder_mutex};
         for (auto& chunk : full_chunks) {
             recorder_queue.push_back(std::move(chunk));
         }
-        if (!record_chunk->Empty()) {
-            recorder_queue.push_back(std::move(record_chunk));
+        if (next_record) {
+            record_chunk.swap(next_record); // next_record: the chunk handed over
+            recorder_queue.push_back(std::move(next_record));
         }
         wake = recorder_sleeping;
         queued_chunks.store(recorder_queue.size(), std::memory_order_release);
@@ -254,9 +287,6 @@ void Scheduler::KickRecording(bool force) {
     // A busy recorder picks the new chunks up by itself: waking it is a syscall per draw.
     if (wake) {
         recorder_cv.notify_one();
-    }
-    if (!record_chunk) {
-        record_chunk = AcquireChunk();
     }
 }
 
@@ -379,7 +409,7 @@ void Scheduler::AllocateWorkerCommandBuffers() {
     };
 
     current_cmdbuf = command_pool.Commit();
-    Check(current_cmdbuf.begin(begin_info));
+    Check<"begin a command buffer">(current_cmdbuf.begin(begin_info));
 
     // Invalidate dynamic state so it gets applied to the new command buffer.
     dynamic_state.Invalidate();
@@ -418,7 +448,10 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     SyncRecording();
     // Guest memory copies into staging read by this submission (copy threads).
     WaitHostCopies();
-    Check(current_cmdbuf.end());
+    // bbport: the driver reports a recording that went wrong only here (AMD answers ErrorUnknown);
+    // the message names the call so the crash report does not just say "vk::Result=ErrorUnknown".
+    Check<"end the command buffer (the driver could not record this submission)">(
+        current_cmdbuf.end());
 
     const vk::Semaphore timeline = work_semaphore.Handle();
     info.AddSignal(timeline, signal_value);
@@ -448,7 +481,13 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 
     ImGui::Core::TextureManager::Submit();
     auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
-    ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    // bbport: any failed submission must stop the port. Ignoring e.g. an out-of-memory result
+    // left the timeline semaphore unsignalled, and every later wait on it hung the game silently.
+    if (submit_result != vk::Result::eSuccess) {
+        Breadcrumbs::ReportDeviceLost("submit"); // which command the GPU never finished
+    }
+    ASSERT_MSG(submit_result == vk::Result::eSuccess, "Queue submit failed: {}",
+               vk::to_string(submit_result));
 
     work_semaphore.Refresh();
     AllocateWorkerCommandBuffers();

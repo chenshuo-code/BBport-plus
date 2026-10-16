@@ -135,9 +135,9 @@ if __name__ == '__main__':  # self-test on a temporary file
     import tempfile
     with tempfile.TemporaryDirectory() as folder:
         vdf = Path(folder) / 'shortcuts.vdf'
-        print(add_shortcut(vdf, 'Bloodborne', r'C:\Games\bb\Play Bloodborne.exe', r'C:\Games\bb', 'x.exe'))
+        print(add_shortcut(vdf, 'Bloodborne', r'C:\Games\bb\Bloodborne.exe', r'C:\Games\bb', 'x.exe', '--play'))
         print(add_shortcut(vdf, 'Other', r'C:\Other\o.exe', r'C:\Other', ''))
-        print(add_shortcut(vdf, 'Bloodborne', r'C:\Games\bb\Play Bloodborne.exe', r'C:\Games\bb', 'y.exe'))
+        print(add_shortcut(vdf, 'Bloodborne', r'C:\Games\bb\Bloodborne.exe', r'C:\Games\bb', 'y.exe', '--play'))
         root = parse(vdf.read_bytes())[0]
         print([[f for f in e[2] if f[1] in ('AppName', 'icon', 'appid')] for e in root[0][2]])
         assert dump(root) + bytes([END]) == vdf.read_bytes()

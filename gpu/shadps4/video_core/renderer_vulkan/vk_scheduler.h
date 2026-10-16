@@ -23,6 +23,7 @@
 #include "common/unique_function.h"
 #include "video_core/amdgpu/regs_color.h"
 #include "video_core/amdgpu/regs_primitive.h"
+#include "video_core/renderer_vulkan/vk_breadcrumbs.h"
 #include "video_core/renderer_vulkan/vk_resource_pool.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
@@ -731,6 +732,29 @@ public:
     /// BB_RECORDER_TRACE=1: prints the most frequent CommandBuffer() callers every 2000 calls.
     static void TraceDirectRecording(void* caller);
 
+    /// bbport: Record() for a draw, dispatch or pass that runs shaders, between GPU breadcrumbs
+    /// (vk_breadcrumbs.h, from deadinside28/bloodborne_pc): on a GPU hang they say which one
+    /// never finished.
+    template <typename Func>
+    void RecordCrumb(const Breadcrumbs::Crumb& crumb, Func&& func) {
+        if (!Breadcrumbs::Enabled()) {
+            Record(std::forward<Func>(func));
+            return;
+        }
+        const u32 id = Breadcrumbs::Note(crumb_stream, crumb);
+        Record([func = std::forward<Func>(func), stream = crumb_stream,
+                id](vk::CommandBuffer cmdbuf) mutable {
+            Breadcrumbs::Mark(cmdbuf, stream, id, false);
+            func(cmdbuf);
+            Breadcrumbs::Mark(cmdbuf, stream, id, true);
+        });
+    }
+
+    /// bbport: the breadcrumb stream of this scheduler, for passes recorded on CommandBuffer().
+    [[nodiscard]] u32 CrumbStream() const noexcept {
+        return crumb_stream;
+    }
+
     /// Records `func(vk::CommandBuffer)` in order with other commands. The closure must own
     /// everything it uses (capture by value): it may run later on the recording thread.
     template <typename Func>
@@ -745,13 +769,13 @@ public:
             func(current_cmdbuf);
             return;
         }
-        if (!record_chunk->Push(std::forward<Func>(func))) {
-            full_chunks.push_back(std::move(record_chunk));
-            record_chunk = AcquireChunk();
-            const bool pushed = record_chunk->Push(std::forward<Func>(func));
+        if (!CurrentChunk().Push(std::forward<Func>(func))) {
+            RetireChunk();
+            const bool pushed = CurrentChunk().Push(std::forward<Func>(func));
             ASSERT(pushed);
         }
     }
+
 
     /// True when Record() defers commands (and RecordData() copies into chunks).
     [[nodiscard]] bool IsRecordingDeferred() const noexcept {
@@ -766,9 +790,8 @@ public:
             return;
         }
         ASSERT(bytes + 1024 <= RecordChunk::Capacity);
-        if (RecordChunk::Capacity - record_chunk->Size() < bytes + 1024) {
-            full_chunks.push_back(std::move(record_chunk));
-            record_chunk = AcquireChunk();
+        if (RecordChunk::Capacity - CurrentChunk().Size() < bytes + 1024) {
+            RetireChunk();
         }
     }
 
@@ -782,7 +805,7 @@ public:
         // Room for the data and the command that follows it, so both stay in one chunk.
         const size_t bytes = data.size_bytes();
         ReserveRecordData(bytes + alignof(T));
-        auto* dst = static_cast<T*>(record_chunk->Allocate(bytes, alignof(T)));
+        auto* dst = static_cast<T*>(CurrentChunk().Allocate(bytes, alignof(T)));
         std::memcpy(dst, data.data(), bytes);
         return {dst, data.size()};
     }
@@ -879,6 +902,25 @@ private:
 
     std::unique_ptr<RecordChunk> AcquireChunk();
 
+    /// bbport: moves the full current chunk aside; a new one takes its place (swapped in: never
+    /// null). From Mrsuss60/bbport 196ba93.
+    void RetireChunk() {
+        auto full = AcquireChunk();
+        record_chunk.swap(full);
+        if (full) {
+            full_chunks.push_back(std::move(full));
+        }
+    }
+
+    /// bbport: the current chunk, never null: replacements are swapped in, so a thread that
+    /// records while one is replaced still finds one; a null one is replaced here.
+    RecordChunk& CurrentChunk() {
+        if (!record_chunk) [[unlikely]] {
+            record_chunk = AcquireChunk();
+        }
+        return *record_chunk;
+    }
+
     void RecorderThread(std::stop_token stoken);
 
     void SubmitExecution(SubmitInfo& info);
@@ -889,6 +931,7 @@ private:
     const Instance& instance;
     Semaphore work_semaphore;
     CommandPool command_pool;
+    u32 crumb_stream = 0; ///< bbport: GPU breadcrumbs (vk_breadcrumbs.h)
     DynamicState dynamic_state;
     SubmitFunc on_submit{};
     vk::CommandBuffer current_cmdbuf;

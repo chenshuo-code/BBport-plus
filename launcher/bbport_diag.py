@@ -11,6 +11,10 @@ Files per run (stamp = start time):
                            last log lines, the Windows event log entries about it, the last GPU samples
   perf_events.log          every drop from a steady 55+ FPS to under 40 FPS, with context
   sessions.csv             one row per run (result, average / minimum FPS, drops, stalls)
+  hang_<stamp>.txt         written when the game stops presenting frames while the process is alive: what
+                           every thread is doing (module + offset, CPU time) and the last log lines
+  <saves folder>\\save_backups\\<time>_<reason>\\savedata   copies of the saves: at start, every 10 min of play
+                           when they changed, and at exit (newest 20 kept)
 """
 import collections
 import csv
@@ -29,11 +33,18 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 
 FORK_BUILD = True       # this launcher carries local changes: no automatic update check
-KEEP_RUNS = 40          # run logs kept (older ones are deleted with their csv files)
-KEEP_CRASHES = 200
+KEEP_RUNS = 10          # runs that ended normally: logs kept (older ones are deleted with their csv files)
+KEEP_CRASHES = 10       # crashes kept, each with the crash report and every file of that run
+KEEP_SAVE_BACKUPS = 10  # save snapshots kept (save_backups\\)
+SAVE_BACKUP_INTERVAL = 600.0
+SAVE_SETTLE_SECONDS = 3.0   # a save file written in the last seconds may be half written: wait
+HANG_SECONDS = 30.0     # no "Frame stats" window for this long while the game process lives = a hang
+HANG_MAX_REPORTS = 3
 DROP_FPS = 40.0         # a window below this ...
 STEADY_FPS = 55.0       # ... after a window at or above this is a drop
 EVENT_COOLDOWN = 20.0   # seconds between two drop records
+LOW_COMMIT_MB = 1536    # free commit memory under this is recorded (allocations start to fail)
+LOW_COMMIT_COOLDOWN = 60.0
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 FRAME_STATS = re.compile(r'Frame stats: ([\d.]+) FPS, worst frame ([\d.]+) ms \(vblank (\d+) Hz\); '
@@ -44,7 +55,8 @@ STALL = re.compile(r'Stall: ([\d.]+) ms frame; GPU thread on CPU ([\d.]+) ms; (\
 MEMORY_PRESSURE = re.compile(r'Texture cache: memory pressure, (\d+) of (\d+) MiB')
 FAULT_LINE = re.compile(r'^(Fault:|Host fault|Guest fault|STOP:|  #\d+ |  rax=|  rsi=|API:|Caller |.*[Aa]ssert|'
                         r'.*terminate called|.*VK_ERROR|.*device lost|.*DEVICE_LOST|.*out of (device )?memory|'
-                        r'.*unhandled|.*Unhandled)')
+                        r'.*unhandled|.*Unhandled|.*Failed to |.*vk::Result=|.*GPU hang|.*submit failed|'
+                        r'.*failed: Error)')
 
 # Exit codes: the runtime's own (probe.c / runtime_*.c) and the usual Windows exception codes.
 EXIT_MEANING = {
@@ -53,6 +65,7 @@ EXIT_MEANING = {
     3: 'runtime fault report ("Fault:" lines) or abort()',
     20: 'STOP: unsupported PS4 import',
     21: 'STOP: unsupported runtime feature',
+    23: 'STOP: GPU library assertion (the fault lines name the Vulkan call that failed)',
     0xC0000005: 'access violation',
     0xC000001D: 'illegal instruction',
     0xC0000094: 'integer divide by zero',
@@ -64,6 +77,7 @@ EXIT_MEANING = {
     0xC000012D: 'out of virtual memory / commit limit',
     0x80000003: 'breakpoint',
     0xE06D7363: 'unhandled C++ exception',
+    0xCFFFFFFF: 'ended while not responding (hang; Windows records an Application Hang 1002 event, no fault report)',
     0xFFFFFFFF: 'ended from outside with no fault report (Task Manager / taskkill / the system / a driver reset)',
 }
 THROTTLE = {0x1: 'idle', 0x2: 'app clocks', 0x4: 'SW power cap', 0x8: 'HW slowdown', 0x20: 'SW thermal slowdown',
@@ -83,6 +97,71 @@ ZH = {
     'Chinese, Simplified (简体中文)': '简体中文',
     'Chinese, Traditional (繁體中文)': '繁體中文',
     'Korean (한국어)': '한국어',
+    # About page
+    'About': '关于',
+    'Requirements, this build and the projects it builds on.': '配置要求、本构建的信息,以及它所基于的项目。',
+    'Requirements': '配置要求',
+    'Game': '游戏',
+    'You need the game itself: a decrypted dump of Bloodborne for PS4 (CUSA03173, CUSA03023, CUSA00900 ...) '
+    'with update 1.09 merged in. The community patches (60/90 FPS, uncapped) are for 1.09 only; other '
+    'versions run at 30 FPS. No game files are included.':
+        '需要游戏本体:PS4 版《血源诅咒》的已解密 dump(CUSA03173、CUSA03023、CUSA00900 等),并合并 1.09 更新。'
+        '社区补丁(60/90 FPS、解锁帧率)只支持 1.09,其它版本以 30 FPS 运行。本程序不包含任何游戏文件。',
+    'Windows': 'Windows',
+    'Windows 10 (1903 or newer) or Windows 11, 64-bit. A current graphics driver with Vulkan 1.3.':
+        'Windows 10(1903 或更新)或 Windows 11,64 位。支持 Vulkan 1.3 的最新显卡驱动。',
+    'Graphics card': '显卡',
+    'Minimum: Vulkan 1.3, 8 GB VRAM (GeForce GTX 1070 / Radeon RX 5700 class) for 1080p. '
+    'Recommended: 12 GB or more for 1440p and 4K (RTX 3060 12 GB / RX 6700 XT and up). FSR 4 needs the INT8 '
+    'shader features (RDNA2/3, RTX 20 and up); DLSS needs an RTX card. Integrated graphics are not enough.':
+        '最低:Vulkan 1.3,8 GB 显存(GeForce GTX 1070 / Radeon RX 5700 级别),1080p。'
+        '推荐:12 GB 以上,用于 1440p 和 4K(RTX 3060 12 GB / RX 6700 XT 及以上)。FSR 4 需要 INT8 着色器特性'
+        '(RDNA2/3、RTX 20 及以上);DLSS 需要 RTX 显卡。核显不够用。',
+    'Processor': '处理器',
+    'x86-64 with AVX2 (Intel Core 8th gen / AMD Ryzen 2000 or newer), 6 cores or more recommended.':
+        '支持 AVX2 的 x86-64(Intel 8 代酷睿 / AMD Ryzen 2000 或更新),推荐 6 核以上。',
+    'Memory': '内存',
+    '16 GB RAM minimum, 32 GB recommended. The port commits far more memory than a native game (the whole PS4 '
+    'memory image plus GPU copies: 30 to 50 GB of commit charge at 1440p), so the Windows page file must be large: '
+    'set it to a fixed size of at least 16 GB, 32 GB recommended (System > Advanced system settings > Performance > '
+    'Virtual memory). With the automatic 4 GB page file the game ends after an hour with an access violation.':
+        '最低 16 GB 内存,推荐 32 GB。这个移植层提交的内存远多于原生游戏(整个 PS4 内存镜像加上 GPU 副本,'
+        '1440p 下提交量 30~50 GB),所以 Windows 页面文件必须调大:固定大小至少 16 GB,推荐 32 GB'
+        '(系统 > 高级系统设置 > 性能 > 虚拟内存)。用默认的 4 GB 自动页面文件,游戏玩一小时左右会因访问冲突退出。',
+    'Disk': '硬盘',
+    'About 45 GB for the game dump, 1 GB for the port and up to 4 GB for the shader cache, on an NTFS drive '
+    '(mods use links).':
+        '游戏 dump 约 45 GB,移植程序 1 GB,着色器缓存最多 4 GB;需要 NTFS 分区(MOD 依赖链接)。',
+    'Other': '其它',
+    'Capture and overlay software (OBS, Bilibili Live, Discord overlay) hooks into the game process and adds '
+    'memory; close it when the game is unstable. The game is tested on AMD Radeon RX 7900 XT and NVIDIA RTX cards.':
+        '录屏和叠加层软件(OBS、哔哩哔哩直播姬、Discord 叠加层)会注入游戏进程并占用内存;游戏不稳定时请先关掉它们。'
+        '本构建在 AMD Radeon RX 7900 XT 和 NVIDIA RTX 显卡上测试过。',
+    'This build': '本构建',
+    'Version': '版本',
+    'based on upstream windows-v{}': '基于上游 windows-v{}',
+    'Author': '作者',
+    'License': '许可证',
+    'GPL-2.0-or-later. The source code of this build, its changes and the full credits are on GitHub.':
+        'GPL-2.0-or-later。本构建的源代码、改动记录和完整致谢都在 GitHub 上。',
+    'Source code': '源代码',
+    'Changes': '更新记录',
+    'Built on the work of': '基于以下项目的工作',
+    'The Windows port of bbport (windows-v1.6): runtime, launcher, DLSS, online co-op.':
+        'bbport 的 Windows 移植(windows-v1.6):运行时、启动器、DLSS、联机合作。',
+    'bbport, the native port itself; from its 0.5: the texture collector by idle time, background '
+    'pipeline compilation, GPU breadcrumbs, the game-file check.':
+        'bbport 原生移植本身;来自其 0.5 版:按闲置时间回收纹理、后台编译管线、GPU breadcrumbs、游戏文件检查。',
+    'The AMD object-motion fix (shader varyings), the Intel 12th-gen attack crash fix, the live VRAM '
+    'budget, crash reports with stack unwinding.':
+        'AMD 的 object motion 修复(着色器 varying)、Intel 12 代被攻击时崩溃的修复、实时显存预算、带调用栈展开的崩溃报告。',
+    'The Vulkan renderer and shader recompiler the GPU layer is derived from.':
+        'GPU 层所源自的 Vulkan 渲染器和着色器重编译器。',
+    'Also': '以及',
+    'AMD FidelityFX (FSR 3.1 / FSR 4), FireBurn/FSR-Vulkan, NVIDIA DLSS, LibAtrac9, SDL3, FFmpeg, the authors of the '
+    'community patches (Bloodborne.xml) and of the mods, and everyone who sent crash reports.':
+        'AMD FidelityFX(FSR 3.1 / FSR 4)、FireBurn/FSR-Vulkan、NVIDIA DLSS、LibAtrac9、SDL3、FFmpeg、'
+        '社区补丁(Bloodborne.xml)和 MOD 的作者们,以及每一位发来崩溃报告的人。',
 }
 
 
@@ -188,6 +267,25 @@ def system_events_text(minutes=None, hours=None):
     return lines
 
 
+# Crash signatures with a known cause: (substrings that must all appear in the Windows event lines, hint).
+KNOWN_SIGNATURES = (
+    (('ucrtbase.dll', 'c0000005'),
+     'known signature: an access violation inside the C runtime (memcpy) called by the game itself. Seen when a '
+     'renderer per-frame heap of the game is full after about an hour of play (a GXWorker thread then copies into '
+     'a null pointer). The patch "GX frame heap 4 MB" in patches/bbport-plus.xml prevents it; check that it is '
+     'enabled on the Patches page. Details: docs/GX_FRAME_HEAP.md'),
+)
+
+
+def known_signature(event_lines):
+    """The hint of the first known crash signature found in the Windows event lines, or None."""
+    text = chr(10).join(event_lines)
+    for needles, hint in KNOWN_SIGNATURES:
+        if all(n in text for n in needles):
+            return hint
+    return None
+
+
 def collect_history(hours, out_dir):
     """--diag-report: what Windows kept about crashes of the game in the last `hours` hours. Works for any
     graphics card and for runs that happened before the launcher wrote its own logs."""
@@ -202,6 +300,213 @@ def collect_history(hours, out_dir):
     path = out_dir / f'diag_report_{datetime.now():%Y%m%d_%H%M%S}.txt'
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return path
+
+
+# ---- save backups ---------------------------------------------------------------------------
+def save_signature(root):
+    """((relative path, size, mtime_ns), ...) of every file under root, and the newest mtime."""
+    items = []
+    newest = 0
+    for path in sorted(Path(root).rglob('*')):
+        if path.is_file():
+            st = path.stat()
+            items.append((path.relative_to(root).as_posix(), st.st_size, st.st_mtime_ns))
+            newest = max(newest, st.st_mtime_ns)
+    return items, newest
+
+
+def backup_saves(user_dir, reason, keep=KEEP_SAVE_BACKUPS, settle=SAVE_SETTLE_SECONDS):
+    """Copies <user_dir>/savedata to <user_dir>/save_backups/<time>_<reason>/savedata unless it is
+    identical to the newest backup. Returns the new folder, or None (nothing to do / not now)."""
+    src = Path(user_dir) / 'savedata'
+    if not src.is_dir():
+        return None
+    root = Path(user_dir) / 'save_backups'
+    try:
+        items, newest = save_signature(src)
+        if not items:
+            return None
+        if time.time() - newest / 1e9 < settle:
+            return None                      # being written right now: the next tick takes it
+        existing = sorted(p for p in root.glob('*') if p.is_dir()) if root.is_dir() else []
+        if existing:
+            try:
+                last = json.loads((existing[-1] / 'signature.json').read_text(encoding='utf-8'))
+                if [list(i) for i in items] == last:
+                    return None
+            except (OSError, ValueError):
+                pass
+        dst = root / f'{datetime.now().strftime("%Y%m%d_%H%M%S")}_{reason}'
+        shutil.copytree(src, dst / 'savedata')
+        after, _ = save_signature(dst / 'savedata')
+        if [(a, b) for a, b, _ in after] != [(a, b) for a, b, _ in items]:
+            shutil.rmtree(dst, ignore_errors=True)   # the game wrote while we copied: try again later
+            return None
+        (dst / 'signature.json').write_text(json.dumps([list(i) for i in items]), encoding='utf-8')
+        existing = sorted(p for p in root.glob('*') if p.is_dir())
+        for old in existing[:-keep]:
+            shutil.rmtree(old, ignore_errors=True)
+        return dst
+    except OSError:
+        return None
+
+
+# ---- thread snapshot of a hung game ---------------------------------------------------------
+def thread_snapshot(pid, gap=1.5, stack_qwords=384, max_hits=20):
+    """Text: every thread of `pid` with its name, CPU time spent in the last `gap` seconds, where it is
+    (instruction pointer as module+offset) and the code addresses found on its stack. Threads are
+    suspended one at a time for a moment. Windows only; returns an explanation when it cannot work."""
+    import ctypes.wintypes as wt
+    if os.name != 'nt':
+        return 'thread snapshot: Windows only\n'
+    k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    psapi = ctypes.WinDLL('psapi', use_last_error=True)
+    vp = ctypes.c_void_p
+    k32.OpenProcess.restype = vp
+    k32.OpenProcess.argtypes = (wt.DWORD, wt.BOOL, wt.DWORD)
+    k32.OpenThread.restype = vp
+    k32.OpenThread.argtypes = (wt.DWORD, wt.BOOL, wt.DWORD)
+    k32.CloseHandle.argtypes = (vp,)
+    k32.SuspendThread.argtypes = (vp,)
+    k32.ResumeThread.argtypes = (vp,)
+    k32.GetThreadContext.argtypes = (vp, vp)
+    k32.GetThreadTimes.argtypes = (vp, vp, vp, vp, vp)
+    k32.ReadProcessMemory.argtypes = (vp, vp, vp, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t))
+    k32.VirtualQueryEx.argtypes = (vp, vp, vp, ctypes.c_size_t)
+    k32.CreateToolhelp32Snapshot.restype = vp
+    k32.CreateToolhelp32Snapshot.argtypes = (wt.DWORD, wt.DWORD)
+    k32.Thread32First.argtypes = (vp, vp)
+    k32.Thread32Next.argtypes = (vp, vp)
+    k32.LocalFree.argtypes = (vp,)
+    psapi.EnumProcessModulesEx.argtypes = (vp, vp, wt.DWORD, ctypes.POINTER(wt.DWORD), wt.DWORD)
+    psapi.GetModuleFileNameExW.argtypes = (vp, vp, ctypes.c_wchar_p, wt.DWORD)
+    psapi.GetModuleInformation.argtypes = (vp, vp, vp, wt.DWORD)
+
+    class ThreadEntry(ctypes.Structure):
+        _fields_ = [('dwSize', wt.DWORD), ('cntUsage', wt.DWORD), ('th32ThreadID', wt.DWORD),
+                    ('th32OwnerProcessID', wt.DWORD), ('tpBasePri', ctypes.c_long),
+                    ('tpDeltaPri', ctypes.c_long), ('dwFlags', wt.DWORD)]
+
+    class ModuleInfo(ctypes.Structure):
+        _fields_ = [('base', vp), ('size', wt.DWORD), ('entry', vp)]
+
+    class MemInfo(ctypes.Structure):
+        _fields_ = [('BaseAddress', vp), ('AllocationBase', vp), ('AllocationProtect', wt.DWORD),
+                    ('PartitionId', wt.WORD), ('RegionSize', ctypes.c_size_t), ('State', wt.DWORD),
+                    ('Protect', wt.DWORD), ('Type', wt.DWORD)]
+
+    process = k32.OpenProcess(0x0010 | 0x0400 | 0x0008, False, pid)   # VM_READ | QUERY_INFORMATION | VM_OPERATION
+    if not process:
+        return f'thread snapshot: cannot open process {pid} (error {ctypes.get_last_error()})\n'
+    out = []
+    try:
+        # modules
+        mods = []
+        need = wt.DWORD(0)
+        arr = (vp * 1024)()
+        if psapi.EnumProcessModulesEx(process, arr, ctypes.sizeof(arr), ctypes.byref(need), 3):
+            for i in range(min(1024, need.value // ctypes.sizeof(vp))):
+                info = ModuleInfo()
+                if not psapi.GetModuleInformation(process, arr[i], ctypes.byref(info), ctypes.sizeof(info)):
+                    continue
+                name = ctypes.create_unicode_buffer(520)
+                psapi.GetModuleFileNameExW(process, arr[i], name, 520)
+                mods.append((info.base or 0, info.size, os.path.basename(name.value)))
+        mods.sort()
+
+        def where(addr):
+            for base, size, name in mods:
+                if base <= addr < base + size:
+                    return f'{name}+0x{addr - base:x}'
+            return None
+
+        exec_cache = {}
+
+        def executable(addr):
+            key = addr >> 16
+            if key not in exec_cache:
+                mi = MemInfo()
+                ok = k32.VirtualQueryEx(process, vp(addr), ctypes.byref(mi), ctypes.sizeof(mi))
+                exec_cache[key] = bool(ok and mi.State == 0x1000 and mi.Protect & 0xF0 and
+                                       not mi.Protect & 0x100)
+            return exec_cache[key]
+
+        # thread ids (never the calling thread: suspending it would hang the snapshot when pid is our own)
+        me = k32.GetCurrentThreadId()
+        tids = []
+        snap = k32.CreateToolhelp32Snapshot(0x4, 0)
+        entry = ThreadEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        if snap and k32.Thread32First(snap, ctypes.byref(entry)):
+            while True:
+                if entry.th32OwnerProcessID == pid and entry.th32ThreadID != me:
+                    tids.append(entry.th32ThreadID)
+                if not k32.Thread32Next(snap, ctypes.byref(entry)):
+                    break
+        if snap:
+            k32.CloseHandle(snap)
+
+        def cpu_ms(handle):
+            t = [ctypes.c_ulonglong(0) for _ in range(4)]
+            k32.GetThreadTimes(handle, *(ctypes.byref(x) for x in t))
+            return (t[2].value + t[3].value) / 10000.0      # kernel + user, 100 ns units
+
+        handles = {}
+        for tid in tids:
+            h = k32.OpenThread(0x0002 | 0x0008 | 0x0040 | 0x0800 | 0x0020, False, tid)
+            if h:
+                handles[tid] = h
+        before = {tid: cpu_ms(h) for tid, h in handles.items()}
+        time.sleep(gap)
+        out.append(f'{len(tids)} threads ({len(handles)} opened); modules: ' +
+                   ', '.join(f'{n}@0x{b:x}' for b, _, n in mods[:6]))
+        rows = []
+        buf = (ctypes.c_ubyte * (1232 + 16))()
+        aligned = (ctypes.addressof(buf) + 15) & ~15
+        for tid, h in handles.items():
+            busy = cpu_ms(h) - before[tid]
+            desc = ctypes.c_void_p()
+            name = ''
+            if hasattr(k32, 'GetThreadDescription') and k32.GetThreadDescription(h, ctypes.byref(desc)) >= 0 and desc.value:
+                name = ctypes.wstring_at(desc.value)
+                k32.LocalFree(desc)
+            rip = rsp = 0
+            stack_hits = []
+            suspended = k32.SuspendThread(h) != 0xFFFFFFFF
+            try:
+                if suspended:
+                    ctypes.memset(aligned, 0, 1232)
+                    ctypes.c_uint.from_address(aligned + 0x30).value = 0x100003   # CONTEXT_CONTROL | INTEGER
+                    if k32.GetThreadContext(h, vp(aligned)):
+                        rsp = ctypes.c_ulonglong.from_address(aligned + 0x98).value
+                        rip = ctypes.c_ulonglong.from_address(aligned + 0xF8).value
+                    if rsp:
+                        raw = (ctypes.c_ubyte * (stack_qwords * 8))()
+                        got = ctypes.c_size_t(0)
+                        if k32.ReadProcessMemory(process, vp(rsp), raw, len(raw), ctypes.byref(got)):
+                            for i in range(got.value // 8):
+                                v = int.from_bytes(bytes(raw[i * 8:i * 8 + 8]), 'little')
+                                if 0x10000 < v < 0x7FFFFFFFFFFF and (where(v) or executable(v)):
+                                    stack_hits.append((i * 8, v))
+            finally:
+                if suspended:
+                    k32.ResumeThread(h)
+            rows.append((busy, tid, name, rip, rsp, stack_hits))
+        for h in handles.values():
+            k32.CloseHandle(h)
+        rows.sort(key=lambda r: -r[0])
+        for busy, tid, name, rip, rsp, hits in rows:
+            loc = (where(rip) or ('guest/jit 0x%x' % rip if rip else 'unknown'))
+            out.append(f'\nthread {tid} {name!r}: {busy:.0f} ms CPU in {gap:g} s, rip {loc} (0x{rip:x}), rsp 0x{rsp:x}')
+            shown = 0
+            for off, v in hits:
+                if shown >= max_hits:
+                    break
+                out.append(f'    +0x{off:03x}  0x{v:x}  {where(v) or "executable memory"}')
+                shown += 1
+    finally:
+        k32.CloseHandle(process)
+    return '\n'.join(out) + '\n'
 
 
 class RunRecorder:
@@ -238,8 +543,15 @@ class RunRecorder:
         self.smi = None
         self.perf = None
         self.loads = collections.deque(maxlen=150)     # vendor-neutral GPU samples
+        self.commit_low = None                         # (t, MB): lowest free commit memory seen
+        self.commit_limit = 0
+        self.last_commit_event = -1e9
         self.files = {}
         self.crash_report = None
+        self.last_window_time = time.time()
+        self.hang_reports = 0
+        self.last_hang = -1e9
+        threading.Thread(target=self.save_backup_loop, daemon=True).start()
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
             self.log = open(self.dir / f'run_{self.stamp}.log', 'w', encoding='utf-8', buffering=1)
@@ -252,6 +564,7 @@ class RunRecorder:
             self.stall_log = self.open_text('stalls')
             threading.Thread(target=self.sample_gpu, daemon=True).start()
             threading.Thread(target=self.sample_windows_counters, daemon=True).start()
+            threading.Thread(target=self.watch_hang, daemon=True).start()
             threading.Thread(target=lambda: self.emit('Adapters: ' + ' / '.join(video_controllers()) + '\n'),
                              daemon=True).start()
         else:
@@ -357,6 +670,7 @@ class RunRecorder:
 
     def on_window(self, fps, worst, vblank, compiles, compile_ms, line):
         self.close_stall()
+        self.last_window_time = time.time()
         t = self.uptime()
         self.fps.append((t, fps, worst, compiles, compile_ms))
         self.write_csv('fps', [f'{t:.1f}', fps, worst, compiles, compile_ms])
@@ -392,12 +706,36 @@ class RunRecorder:
         for block in stalls[:8]:
             lines += ['  ' + row for row in block]
         lines.append('')
+        self.write_event(lines)
+        self.emit(f'[diag] FPS drop to {fps:.0f} recorded in logs\\perf_events.log\n')
+
+    def write_event(self, lines):
         try:
             with open(self.dir / 'perf_events.log', 'a', encoding='utf-8') as handle:
                 handle.write('\n'.join(lines) + '\n')
         except OSError:
             pass
-        self.emit(f'[diag] FPS drop to {fps:.0f} recorded in logs\\perf_events.log\n')
+
+    def note_commit(self, free_commit, limit, context):
+        """Keeps the lowest free commit memory of the run and records it when it gets scarce: from
+        there on allocations fail, which the game shows as an access violation (often in
+        ucrtbase.dll) or a Vulkan error rather than an out-of-memory message."""
+        if not limit:
+            return
+        t = self.uptime()
+        self.commit_limit = limit
+        if self.commit_low is None or free_commit < self.commit_low[1]:
+            self.commit_low = (t, free_commit)
+        if free_commit >= LOW_COMMIT_MB or t - self.last_commit_event < LOW_COMMIT_COOLDOWN:
+            return
+        self.last_commit_event = t
+        self.write_event([f'--- {datetime.now():%Y-%m-%d %H:%M:%S}  run {self.stamp}  +{t:.0f}s  low commit memory: '
+                          f'{free_commit} MB free of {limit} MB ---',
+                          context, self.last_pacing or 'no pacing line',
+                          'Windows is nearly out of commit memory (RAM + page file). Allocations fail from here, '
+                          'which ends the game without an out-of-memory message. Enlarge the page file '
+                          '(System > Advanced system settings > Performance > Virtual memory).', ''])
+        self.emit(f'[diag] free commit memory down to {free_commit} MB, recorded in logs\\perf_events.log\n')
 
     # ---- GPU telemetry -----------------------------------------------------------------------
     def sample_gpu(self):
@@ -427,18 +765,74 @@ class RunRecorder:
                     power = float(parts[6]) if parts[6] not in ('[N/A]', '') else 0.0
                 except ValueError:
                     continue
-                free_ram, free_commit, _limit = memory_status()
+                free_ram, free_commit, limit = memory_status()
                 sample = {'util': util, 'vram': vram, 'vram_total': total, 'temp': temp, 'clk': clk,
                           'clk_max': clk_max, 'power': power, 'throttle': mask, 't': self.uptime()}
                 with self.lock:
                     self.samples.append(sample)
                 self.vram_max = max(self.vram_max, vram)
+                self.note_commit(free_commit, limit, f'GPU {util}% | VRAM {vram}/{total} MB | RAM free {free_ram} MB')
                 if mask & THROTTLE_BAD and util > 60:
                     self.throttled = True
                 self.write_csv('gpu', [f'{sample["t"]:.1f}', util, vram, total, temp, clk, clk_max, power,
                                        f'0x{mask:x}', decode_throttle(mask), free_ram, free_commit])
             if got:
                 return
+
+    def save_backup_loop(self):
+        """Save snapshots: when the game starts, then every SAVE_BACKUP_INTERVAL s if they changed."""
+        attempts, last = 0, time.time()
+        while not self.closed:
+            if attempts < 12:                         # at start: retry a few times (file being written)
+                made = backup_saves(self.log_dir, 'play')
+                attempts = 99 if made else attempts + 1
+                last = time.time()
+            elif time.time() - last >= SAVE_BACKUP_INTERVAL:
+                made = backup_saves(self.log_dir, 'play')
+                last = time.time()
+            else:
+                made = None
+            if made:
+                self.emit(f'[diag] save backup: {made}\n')
+            time.sleep(5)
+
+    def watch_hang(self):
+        """The game prints a "Frame stats" window every 5 s while it renders. No window for HANG_SECONDS
+        while the process lives (and it already rendered) is a hang: record what every thread does."""
+        while not self.closed:
+            time.sleep(5)
+            if self.closed or not self.fps or self.hang_reports >= HANG_MAX_REPORTS:
+                continue
+            quiet = time.time() - self.last_window_time
+            if quiet < HANG_SECONDS or time.time() - self.last_hang < 90:
+                continue
+            pid = self.find_game_pid()
+            if not pid:
+                continue
+            self.last_hang = time.time()
+            self.hang_reports += 1
+            try:
+                self.write_hang_report(pid, quiet)
+            except Exception as error:   # a diagnostic must never hurt the game
+                self.emit(f'[diag] hang report failed: {error!r}\n')
+
+    def write_hang_report(self, pid, quiet):
+        snapshot = thread_snapshot(pid)
+        with self.lock:
+            tail = list(self.tail)[-60:]
+            gpu = list(self.loads)[-8:]
+        free_ram, free_commit, limit = memory_status()
+        path = self.dir / f'hang_{self.stamp}.txt'
+        mode = 'a' if path.exists() else 'w'
+        with open(path, mode, encoding='utf-8') as f:
+            f.write(f'=== hang report {self.hang_reports}: no frame window for {quiet:.0f} s, run {self.stamp}, '
+                    f'+{self.uptime():.0f} s, game pid {pid} ===\n')
+            f.write(f'free RAM {free_ram} MB, free commit {free_commit} of {limit} MB\n')
+            if gpu:
+                f.write('recent GPU samples: ' + '; '.join(str(g) for g in gpu) + '\n')
+            f.write('\n--- threads ---\n' + snapshot)
+            f.write('\n--- last log lines ---\n' + '\n'.join(tail) + '\n\n')
+        self.emit(f'[diag] the game stopped presenting frames {quiet:.0f} s ago: thread snapshot in {path}\n')
 
     def find_game_pid(self):
         out = run_tool(['tasklist', '/FI', 'IMAGENAME eq bb-probe.exe', '/FO', 'CSV', '/NH'], 8)
@@ -504,11 +898,13 @@ class RunRecorder:
                     game += number
             adapter_vram = max(vram.values(), default=0) / (1 << 20)
             adapter_load = min(100.0, max(load.values(), default=0))
-            free_ram, free_commit, _limit = memory_status()
+            free_ram, free_commit, limit = memory_status()
             sample = {'t': self.uptime(), 'vram': int(adapter_vram), 'load': adapter_load, 'game_vram': int(game / (1 << 20))}
             with self.lock:
                 self.loads.append(sample)
             self.vram_max = max(self.vram_max, sample['vram'])
+            self.note_commit(free_commit, limit, f'adapter 3D {adapter_load:.0f}% | adapter VRAM {sample["vram"]} MB | '
+                                                 f'game VRAM {sample["game_vram"]} MB | RAM free {free_ram} MB')
             self.write_csv('load', [f'{sample["t"]:.1f}', sample['vram'], f'{adapter_load:.0f}', sample['game_vram'],
                                     free_ram, free_commit])
         return False
@@ -551,12 +947,20 @@ class RunRecorder:
             summary += (f'FPS windows: {len(windows)}, average {average:.1f}, minimum {min(windows):.1f}, '
                         f'under {DROP_FPS:.0f}: {low}; drops recorded: {self.drops}; frames over 40 ms: {self.stalls} '
                         f'(worst {self.worst_stall:.0f} ms); peak VRAM {self.vram_max} MB\n')
+        if self.commit_low:
+            summary += self.commit_text() + '\n'
         self.emit(summary)
         if self.diagnostics and result == 'crash':
             self.crash_report = self.write_crash_report(code, duration)
             self.emit(f'[diag] crash report: {self.crash_report}\n')
         self.stop_sampler()
         self.closed = True
+        made = backup_saves(self.log_dir, 'exit', settle=0.0)
+        if made:
+            try:
+                self.log.write(f'[diag] save backup: {made}\n') if self.log else None
+            except (OSError, ValueError):
+                pass
         for handle in [self.log, self.last_run, self.stall_log] + [f[0] for f in self.files.values()]:
             try:
                 if handle:
@@ -575,6 +979,13 @@ class RunRecorder:
                     process.terminate()
                 except OSError:
                     pass
+
+    def commit_text(self):
+        t_low, low = self.commit_low
+        text = f'Lowest free commit memory during the run: {low} MB of {self.commit_limit} MB (at +{t_low:.0f} s)'
+        if low < LOW_COMMIT_MB:
+            text += ' -- scarce: allocations can fail; enlarge the Windows page file'
+        return text
 
     def write_crash_report(self, code, duration):
         unsigned = code & 0xFFFFFFFF
@@ -603,10 +1014,16 @@ class RunRecorder:
             lines += ['', '=== last adapter samples (seconds, adapter 3D %, adapter VRAM MB, game VRAM MB) ===']
             lines += [f'{s["t"]:7.1f}  {s["load"]:3.0f}%  {s["vram"]:6d}  {s["game_vram"]:6d}' for s in loads]
         avail_phys, avail_commit, limit = memory_status()
-        lines += ['', f'=== memory now: free RAM {avail_phys} MB, free commit {avail_commit} of {limit} MB ===',
-                  '', '=== graphics adapters ===']
+        lines += ['', f'=== memory now: free RAM {avail_phys} MB, free commit {avail_commit} of {limit} MB ===']
+        if self.commit_low:
+            lines.append(self.commit_text())
+        lines += ['', '=== graphics adapters ===']
         lines += video_controllers() or ['(unknown)']
-        lines += system_events_text(15)
+        events = system_events_text(15)
+        lines += events
+        hint = known_signature(events)
+        if hint:
+            lines += ['', '=== ' + hint + ' ===']
         lines += ['', '=== settings ===', self.settings_text(), '',
                   f'=== last {len(tail)} output lines ===']
         lines += tail
@@ -635,15 +1052,30 @@ class RunRecorder:
             pass
 
     def prune(self):
+        """Keeps the newest KEEP_CRASHES crashes complete (report + log + csv files of that run) and
+        the newest KEEP_RUNS other runs; everything older is deleted. A crash is never pushed out
+        by later runs that went well."""
         try:
-            runs = sorted(self.dir.glob('run_*.log'), key=lambda p: p.name)
-            runs = [p for p in runs if not p.name.endswith('_stalls.log')]
-            for old in runs[:-KEEP_RUNS]:
-                stem = old.name[:-len('.log')]
-                for extra in self.dir.glob(stem + '*'):
-                    extra.unlink(missing_ok=True)
             crashes = sorted(self.dir.glob('crash_*.txt'), key=lambda p: p.name)
             for old in crashes[:-KEEP_CRASHES]:
+                self.delete_run('run_' + old.name[len('crash_'):-len('.txt')])
                 old.unlink(missing_ok=True)
+            hangs = sorted(self.dir.glob('hang_*.txt'), key=lambda p: p.name)
+            for old in hangs[:-KEEP_CRASHES]:
+                self.delete_run('run_' + old.name[len('hang_'):-len('.txt')])
+                old.unlink(missing_ok=True)
+            kept = {'run_' + p.name[len('crash_'):-len('.txt')] for p in crashes[-KEEP_CRASHES:]}
+            kept |= {'run_' + p.name[len('hang_'):-len('.txt')] for p in hangs[-KEEP_CRASHES:]}
+            for old in sorted(self.dir.glob('fault_*.dmp'), key=lambda p: p.name)[:-3]:
+                old.unlink(missing_ok=True)       # minidumps written by bb-probe's fault handler
+            runs = sorted(self.dir.glob('run_*.log'), key=lambda p: p.name)
+            runs = [p for p in runs if not p.name.endswith('_stalls.log') and p.name[:-len('.log')] not in kept]
+            for old in runs[:-KEEP_RUNS]:
+                self.delete_run(old.name[:-len('.log')])
         except OSError:
             pass
+
+    def delete_run(self, stem):
+        """run_<stamp>.log and the csv / stalls files of that run."""
+        for extra in self.dir.glob(stem + '*'):
+            extra.unlink(missing_ok=True)

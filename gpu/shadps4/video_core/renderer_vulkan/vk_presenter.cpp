@@ -164,9 +164,9 @@ Presenter::~Presenter() {
     draw_scheduler.Finish();
     present_scheduler.Finish();
     flip_scheduler.Finish();
-    Check(draw_scheduler.CommandBuffer().reset());
-    Check(present_scheduler.CommandBuffer().reset());
-    Check(flip_scheduler.CommandBuffer().reset());
+    Check<"reset the draw command buffer">(draw_scheduler.CommandBuffer().reset());
+    Check<"reset the present command buffer">(present_scheduler.CommandBuffer().reset());
+    Check<"reset the flip command buffer">(flip_scheduler.CommandBuffer().reset());
 
     const vk::Device device = instance.GetDevice();
     for (auto& frame : present_frames) {
@@ -244,25 +244,38 @@ void Presenter::RecreateFrame(Frame* frame, u32 width, u32 height) {
     frame->is_hdr = swapchain.GetHDR();
 }
 
+// bbport: see Semaphore::Wait: a bounded wait so a GPU that never finishes a frame ends in a
+// crash report ("GPU hang") instead of a process that stops responding.
+static void WaitPresentDone(const Instance& instance, const Frame* frame) {
+    u64 waited_s = 0;
+    while (true) {
+        const vk::Result result =
+            instance.GetDevice().waitForFences(frame->present_done, false, GPU_WAIT_SLICE_NS);
+        if (result == vk::Result::eSuccess) {
+            return;
+        }
+        ASSERT_MSG(result == vk::Result::eTimeout, "Waiting for a presented frame failed: {}",
+                   vk::to_string(result));
+        ++waited_s;
+        if (waited_s == GPU_WAIT_WARN_S) {
+            LOG_WARNING(Render_Vulkan, "Presentation of frame {} not finished after {} s",
+                        frame->id, waited_s);
+            Breadcrumbs::ReportStuck("present");
+        }
+        const u64 limit = GpuWaitLimitSeconds();
+        ASSERT_MSG(limit == 0 || waited_s < limit,
+                   "GPU hang: presentation of frame {} not finished after {} s", frame->id,
+                   waited_s);
+    }
+}
+
 Frame* Presenter::PrepareLastFrame() {
     if (last_submit_frame == nullptr) {
         return nullptr;
     }
 
     Frame* frame = last_submit_frame;
-
-    while (true) {
-        vk::Result result = instance.GetDevice().waitForFences(frame->present_done, false,
-                                                               std::numeric_limits<u64>::max());
-        if (result == vk::Result::eSuccess) {
-            break;
-        }
-        if (result == vk::Result::eTimeout) {
-            continue;
-        }
-        ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
-                   "Device lost during waiting for a frame");
-    }
+    WaitPresentDone(instance, frame);
 
     auto& scheduler = flip_scheduler;
     scheduler.EndRendering();
@@ -735,6 +748,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
 
     free_frame();
     if (!is_reusing_frame && is_game_frame) {
+        BbStats::frame_number.fetch_add(1, std::memory_order_relaxed); // game frames shown
         DebugState.IncFlipFrameNum();
     }
 }
@@ -744,7 +758,18 @@ Frame* Presenter::GetRenderFrame() {
     Frame* frame;
     {
         std::unique_lock lock{free_mutex};
-        free_cv.wait(lock, [this] { return !free_queue.empty(); });
+        // bbport: frames come back from Present(); when that path is stuck this waited forever.
+        u64 waited_s = 0;
+        while (!free_cv.wait_for(lock, std::chrono::seconds(1),
+                                 [this] { return !free_queue.empty(); })) {
+            ++waited_s;
+            if (waited_s == GPU_WAIT_WARN_S) {
+                LOG_WARNING(Render_Vulkan, "No presentation frame came back after {} s", waited_s);
+            }
+            const u64 limit = GpuWaitLimitSeconds();
+            ASSERT_MSG(limit == 0 || waited_s < limit,
+                       "GPU hang: no presentation frame came back after {} s", waited_s);
+        }
         LOG_DEBUG(Render_Vulkan, "Got render frame, remaining {}", free_queue.size() - 1);
 
         // Take the frame from the queue
@@ -752,23 +777,8 @@ Frame* Presenter::GetRenderFrame() {
         free_queue.pop();
     }
 
-    const vk::Device device = instance.GetDevice();
-    vk::Result result{};
-
-    const auto wait = [&]() {
-        result = device.waitForFences(frame->present_done, false, std::numeric_limits<u64>::max());
-        return result;
-    };
-
     // Wait for the presentation to be finished so all frame resources are free
-    while (wait() != vk::Result::eSuccess) {
-        ASSERT_MSG(result != vk::Result::eErrorDeviceLost,
-                   "Device lost during waiting for a frame");
-        // Retry if the waiting times out
-        if (result == vk::Result::eTimeout) {
-            continue;
-        }
-    }
+    WaitPresentDone(instance, frame);
 
     if (frame->width != expected_frame_width || frame->height != expected_frame_height ||
         frame->is_hdr != swapchain.GetHDR()) {

@@ -1,15 +1,27 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <limits>
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
 
 #include "common/assert.h"
+#include "common/logging/log.h"
+#include "video_core/renderer_vulkan/vk_breadcrumbs.h"
 
 namespace Vulkan {
 
-constexpr u64 WAIT_TIMEOUT = std::numeric_limits<u64>::max();
+u64 GpuWaitLimitSeconds() {
+    static const u64 limit = [] {
+        const char* env = std::getenv("BB_GPU_WAIT_LIMIT");
+        if (env == nullptr || *env == '\0') {
+            return u64{30};
+        }
+        return static_cast<u64>(std::strtoull(env, nullptr, 10));
+    }();
+    return limit;
+}
 
 Semaphore::Semaphore(const Instance& instance_) : instance{instance_} {
     const vk::StructureChain semaphore_chain = {
@@ -62,7 +74,27 @@ void Semaphore::Wait(u64 tick) {
         .pValues = &tick,
     };
 
-    while (instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT) != vk::Result::eSuccess) {
+    // bbport: this used to loop on every result forever. After a device loss, or a submission that
+    // failed and never signalled the tick, the game then hung with no window updates and no report.
+    u64 waited_s = 0;
+    while (true) {
+        const vk::Result result = instance.GetDevice().waitSemaphores(&wait_info, GPU_WAIT_SLICE_NS);
+        if (result == vk::Result::eSuccess) {
+            break;
+        }
+        ASSERT_MSG(result == vk::Result::eTimeout, "Waiting for the GPU failed: {} (tick {}, GPU at {})",
+                   vk::to_string(result), tick, KnownGpuTick());
+        ++waited_s;
+        if (waited_s == GPU_WAIT_WARN_S) {
+            LOG_WARNING(Render_Vulkan, "GPU has not reached tick {} after {} s (GPU at {})", tick,
+                        waited_s, KnownGpuTick());
+            Breadcrumbs::ReportStuck("wait"); // the command the GPU is stuck in, if known
+        }
+        const u64 limit = GpuWaitLimitSeconds();
+        ASSERT_MSG(limit == 0 || waited_s < limit,
+                   "GPU hang: tick {} not reached after {} s (GPU at {}); BB_GPU_WAIT_LIMIT changes "
+                   "the limit",
+                   tick, waited_s, KnownGpuTick());
     }
     Refresh();
 }

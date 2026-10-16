@@ -1118,7 +1118,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const u32 num_instances = regs.num_instances.NumInstances();
     const u32 first_vertex = vertex_offset;
     const u32 first_instance = instance_offset;
-    scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+    const Breadcrumbs::Crumb crumb{
+        .kind = is_indexed ? Breadcrumbs::Kind::DrawIndexed : Breadcrumbs::Kind::Draw,
+        .count = {num_indices, num_instances, 0},
+    };
+    scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
         if (is_indexed) {
             cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex), first_instance);
@@ -1243,7 +1247,12 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     const u64 args_offset = base;
     const vk::Buffer counts = count_address != 0 ? count_buffer->Handle() : vk::Buffer{};
     const u64 counts_offset = count_address != 0 ? count_offset : 0;
-    scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+    const Breadcrumbs::Crumb crumb{
+        .kind = Breadcrumbs::Kind::DrawIndirect,
+        .address = base,
+        .count = {max_count, stride, 0},
+    };
+    scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
         if (is_indexed) {
             if (counts) {
@@ -1325,7 +1334,11 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     if (FrameCapture::Active()) {
         FrameCapture::Dispatch(cs.pgm_hash, dim_x, dim_y, dim_z);
     }
-    scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+    const Breadcrumbs::Crumb crumb{
+        .kind = Breadcrumbs::Kind::Dispatch,
+        .count = {dim_x, dim_y, dim_z},
+    };
+    scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatch(dim_x, dim_y, dim_z);
     });
@@ -1376,7 +1389,11 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     const vk::Pipeline handle = pipeline->Handle();
     const vk::Buffer args = buffer->Handle();
     const u64 args_offset = base;
-    scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+    const Breadcrumbs::Crumb crumb{
+        .kind = Breadcrumbs::Kind::DispatchIndirect,
+        .address = base,
+    };
+    scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatchIndirect(args, args_offset);
     });
@@ -2676,6 +2693,19 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     attachment_feedback_loop = false;
     using VulkanUpscalerTarget = TemporalUpscaler::Target;
     VulkanUpscalerTarget redirect{};
+    // bbport: a scene proxy or an upscaler redirect without a view would reach the driver as a
+    // null attachment: on 2026-10-15 the AMD driver read a null object inside vkCmdBeginRendering
+    // on the recorder thread and the game ended. Such a target is skipped and the image's own
+    // view stays; the first eight cases are reported.
+    const auto null_view = [&](const char* what, VideoCore::ImageId id) {
+        static u32 warned = 0;
+        if (warned++ < 8) {
+            const auto& info = texture_cache.GetImage(id).info;
+            std::printf("GPU: %s has no view for image %#llx %ux%u %s: the image's own view is used\n",
+                        what, static_cast<unsigned long long>(info.guest_address), info.size.width,
+                        info.size.height, vk::to_string(info.pixel_format).c_str());
+        }
+    };
     bool color_redirected = false, depth_redirected = false;
     std::pair<u32, u32> guest_extent{1, 1};
     std::pair<vk::ImageView, vk::ImageLayout> original_color{};
@@ -2809,12 +2839,20 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
 
         if (reduced) {
             const auto target = scene_targets->Attachment(image_id, desc.view_info);
-            attachment.image_view = target.view;
-            attachment.image_layout = target.layout;
+            if (target.view) {
+                attachment.image_view = target.view;
+                attachment.image_layout = target.layout;
+            } else {
+                null_view("scene proxy (color)", image_id);
+            }
         }
         image->usage.render_target = 1u;
         if (cb == 0 && upscaler->Enabled()) {
             color_redirected = upscaler->RedirectColor(image_id, desc.view_info, redirect);
+            if (color_redirected && !redirect.view) {
+                null_view("upscaler redirect (color)", image_id);
+                color_redirected = false;
+            }
             if (color_redirected) {
                 guest_extent = {image->info.size.width, image->info.size.height};
                 original_color = {attachment.image_view, attachment.image_layout};
@@ -2883,13 +2921,21 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
 
         if (reduced) {
             const auto target = scene_targets->Attachment(image_id, desc.view_info);
-            attachment.image_view = target.view;
-            attachment.image_layout = target.layout;
+            if (target.view) {
+                attachment.image_view = target.view;
+                attachment.image_layout = target.layout;
+            } else {
+                null_view("scene proxy (depth)", image_id);
+            }
         }
         image.usage.depth_target = true;
         if (upscaler->Enabled()) {
             VulkanUpscalerTarget depth_redirect;
             depth_redirected = upscaler->RedirectDepth(image_id, depth_redirect);
+            if (depth_redirected && !depth_redirect.view) {
+                null_view("upscaler redirect (depth)", image_id);
+                depth_redirected = false;
+            }
             if (depth_redirected) {
                 guest_extent = {image.info.size.width, image.info.size.height};
                 attachment.image_view = depth_redirect.view;

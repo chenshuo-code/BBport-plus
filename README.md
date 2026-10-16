@@ -1,5 +1,8 @@
 # bbport-plus
 
+Maintained by **GameOClock** (bbport-plus). Built on the work of Super Medo, deadinside28, AdrianCsT
+and shadPS4; the launcher's *About* page and [CHANGELOG.md](CHANGELOG.md) name what came from where.
+
 A Windows fork of [Supermedo/bloodborne_pc](https://github.com/Supermedo/bloodborne_pc) (which is built on
 [deadinside28's bbport](https://github.com/deadinside28/bloodborne_pc)), aimed at **finding the cause of crashes
 and stutter** and at players who use Chinese. Same licence as upstream: GPL-2.0-or-later. Based on upstream
@@ -96,8 +99,8 @@ start `Bloodborne.exe`, pick your game folder and press **PLAY**.
   game's own AA, dynamic light shadows, screen-space reflections, model detail.
 - **Mods and third-party patches**, loaded without changing your game files.
 - **Add to Steam** puts the game in your Steam library in one click.
-- **`Play Bloodborne.exe`** starts the game straight away with your saved settings (good for a
-  desktop shortcut).
+- **`Bloodborne.exe --play`** starts the game straight away with your saved settings (*Add to
+  Steam* uses it; good for a shortcut too).
 - **Controller and keyboard**, an in-game settings menu (Insert or L3+R3), name entry on
   screen, a desktop shortcut, and a button to clear the shader cache.
 

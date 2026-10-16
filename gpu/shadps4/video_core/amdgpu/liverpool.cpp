@@ -75,6 +75,13 @@ static std::span<const u32> NextPacket(std::span<const u32> span, size_t offset)
     return span.subspan(offset);
 }
 
+// bbport: a dword that can start a type 3 packet: reserved bits clear and the whole packet within the
+// `remaining` dwords. Used to find the next packet after an invalid header (see ProcessGraphics).
+static bool PlausibleType3(u32 dword, std::size_t remaining) {
+    const PM4Header header{.raw = dword};
+    return header.type == 3 && (dword & 0xfc) == 0 && header.type3.NumWords() < remaining;
+}
+
 Liverpool::Liverpool() : guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()} {
     num_counter_pairs = Libraries::Kernel::sceKernelIsNeoMode() ? 16 : 8;
     process_thread = std::jthread{std::bind_front(&Liverpool::Process, this)};
@@ -737,12 +744,27 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
 
         switch (type) {
         default:
-            UNREACHABLE_MSG("Wrong PM4 type {}", type);
-            break;
-        case 0:
-            UNREACHABLE_MSG("Unimplemented PM4 type 0, base reg: {}, size: {}",
-                            header->type0.base.Value(), header->type0.NumWords());
-            break;
+        case 0: {
+            // bbport: an invalid header ended the game (UNREACHABLE: "Unimplemented PM4 type 0").
+            // Seen at area loads, 78 minutes into a run: a cut-short SET_SH_REG leaves the next
+            // packets inside its declared body, and the decoder stops inside them. Decoding resumes
+            // at the next dword that can start a type 3 packet, so the rest of the buffer and its
+            // fences still run (dropping them would leave the guest waiting for them forever).
+            // From AdrianCsT/bloodborne_pc e0b464d, itself from GoncaloLobo0/bloodborne_pc_win.
+            std::size_t skip = 1;
+            while (skip < dcb.size() && !PlausibleType3(dcb[skip], dcb.size() - skip)) {
+                ++skip;
+            }
+            std::fprintf(stderr,
+                         "PM4: invalid header %#x (type %u) at dword %zu of the buffer, resynced %zu "
+                         "dwords later\n",
+                         header->raw, type,
+                         std::size_t((reinterpret_cast<uintptr_t>(dcb.data()) - base_addr) /
+                                     sizeof(u32)),
+                         skip);
+            dcb = NextPacket(dcb, skip);
+            continue;
+        }
         case 2:
             // Type-2 packet are used for padding purposes
             dcb = NextPacket(dcb, 1);

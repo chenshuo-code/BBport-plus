@@ -30,7 +30,7 @@ namespace VideoCore {
 
 struct TilingInfo {
     u32 bank_swizzle;
-    u32 num_slices;
+    u32 micro_tiled_mips;
     u32 num_mips;
     std::array<ImageInfo::MipInfo, 16> mips;
 };
@@ -196,8 +196,8 @@ vk::Pipeline TileManager::GetTilingPipeline(const ImageInfo& info, bool is_tiler
 void TileManager::RecordTilingDispatch(vk::Pipeline pipeline, const vk::DescriptorBufferInfo& tiled,
                                        const vk::DescriptorBufferInfo& linear,
                                        const vk::DescriptorBufferInfo& params, u32 dim_x) {
-    scheduler.Record([pipeline, layout = *pl_layout, tiled, linear, params,
-                      dim_x](vk::CommandBuffer cmdbuf) {
+    scheduler.RecordCrumb({.name = "tiling"}, [pipeline, layout = *pl_layout, tiled, linear,
+                                              params, dim_x](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
         const std::array<vk::WriteDescriptorSet, 3> set_writes = {{
             {
@@ -232,7 +232,7 @@ std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* 
 
     TilingInfo params{};
     params.bank_swizzle = info.bank_swizzle;
-    params.num_slices = info.props.is_volume ? info.size.depth : info.resources.layers;
+    params.micro_tiled_mips = info.micro_tiled_mips;
     params.num_mips = info.resources.levels;
     for (u32 mip = 0; mip < params.num_mips; ++mip) {
         auto& mip_info = params.mips[mip];
@@ -268,6 +268,11 @@ std::pair<const Buffer*, u64> TileManager::DetileImage(const VideoCore::Buffer* 
     // bbport: recorded with copies of the descriptor infos (threaded recording).
     RecordTilingDispatch(GetTilingPipeline(info, false), tiled_buffer_info, linear_buffer_info,
                          params_buffer_info, dim_x);
+    // bbport: the source may be the arena (BB_PREUPLOAD), which later uploads write: a copy into
+    // it must wait for this read.
+    runtime.AccessBuffer(in_buffer, in_offset, info.guest_size,
+                         vk::PipelineStageFlagBits2::eComputeShader,
+                         vk::AccessFlagBits2::eShaderRead);
 
     runtime.AccessBuffer(staging.buffer, staging.offset, info.guest_size,
                          vk::PipelineStageFlagBits2::eComputeShader,
@@ -289,7 +294,7 @@ void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buff
 
     TilingInfo params{};
     params.bank_swizzle = info.bank_swizzle;
-    params.num_slices = info.props.is_volume ? info.size.depth : info.resources.layers;
+    params.micro_tiled_mips = info.micro_tiled_mips;
     params.num_mips = static_cast<u32>(buffer_copies.size());
     for (u32 mip = 0; mip < params.num_mips; ++mip) {
         auto& mip_info = params.mips[mip];

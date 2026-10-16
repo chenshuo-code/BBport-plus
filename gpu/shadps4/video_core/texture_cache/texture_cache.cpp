@@ -63,8 +63,35 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
 
 TextureCache::~TextureCache() = default;
 
+std::string TextureCache::DescribeImagesIn(VAddr addr, u64 size) {
+    std::unique_lock lock{mutex, std::try_to_lock}; // the caller may hold it already
+    if (!lock.owns_lock()) {
+        return " [images: not looked up]";
+    }
+    std::string out;
+    int shown = 0;
+    ForEachImageInRegion(addr, size, [&](ImageId, Image& image) {
+        if (shown++ < 3) {
+            out += fmt::format(" [image {:#x}+{:#x} {}x{} fmt {} tile {}{}{}]", image.info.guest_address,
+                               image.info.guest_size, image.info.size.width,
+                               image.info.size.height, u32(image.info.pixel_format),
+                               u32(image.info.tile_mode), image.usage.render_target ? " RT" : "",
+                               True(image.flags & ImageFlagBits::GpuModified) ? " gpu" : "");
+        }
+    });
+    if (shown > 3) {
+        out += fmt::format(" +{} more", shown - 3);
+    }
+    return out;
+}
+
 void TextureCache::ProcessDownloadImages() {
+    // bbport: called for every fence (~450 a frame): the lock only when something is queued.
+    if (!downloads_queued.load(std::memory_order_acquire)) {
+        return;
+    }
     std::unique_lock lk{download_images_mutex};
+    downloads_queued.store(false, std::memory_order_relaxed);
     for (const ImageId image_id : download_images) {
         DownloadImageMemory(image_id, true);
     }
@@ -79,6 +106,27 @@ void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
     const u32 download_size = image.info.pitch * image.info.size.height * image.info.size.depth *
                               image.info.resources.layers * (image.info.num_bits / 8);
     ASSERT(download_size <= image.info.guest_size);
+    vk::BufferImageCopy image_copy = {
+        .bufferOffset = 0,
+        .bufferRowLength = image.info.pitch,
+        .bufferImageHeight = image.info.size.height,
+        .imageSubresource =
+            {
+                .aspectMask = image.info.props.is_depth ? vk::ImageAspectFlagBits::eDepth
+                                                        : vk::ImageAspectFlagBits::eColor,
+                .mipLevel = 0,
+                .baseArrayLayer = 0,
+                .layerCount = image.info.resources.layers,
+            },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {image.info.size.width, image.info.size.height, image.info.size.depth},
+    };
+    // bbport BB_GUEST_IN_PLACE: the GPU copies the image into the game's memory itself, in stream
+    // order: before the fences that follow, no wait here and no CPU copy afterwards.
+    // Where the memory has a VRAM copy the GPU copies into that copy as well: buffers bound over
+    // it read the image's data in stream order (issue #122: motion blur read a render target as a
+    // buffer, 0x104ff00000, from a VRAM copy refreshed only once the CPU copy below landed, frames
+    // later: the frame smeared while the camera turned). The game's memory still gets it below.
     const auto download =
         runtime.GetStagingPool().Request(download_size, MemoryType::HostCached, 16, !sync);
     const vk::BufferImageCopy image_download = {
@@ -154,15 +202,45 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
     });
 }
 
+// bbport BB_IMAGE_WATCH=addr (diagnostics): how the image at that address is used (first 300).
+void TextureCache::WatchImage(const Image& image, const char* what) {
+    static const u64 watched = [] {
+        const char* env = std::getenv("BB_IMAGE_WATCH");
+        return env ? std::strtoull(env, nullptr, 0) : 0ull;
+    }();
+    if (!watched || image.info.guest_address != watched) {
+        return;
+    }
+    static std::atomic<u32> printed{0};
+    if (printed.fetch_add(1) < 300) {
+        std::printf("Image watch %#llx: %s, flags %#x\n", (unsigned long long)watched, what,
+                    u32(image.flags));
+    }
+}
+
 void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
     std::scoped_lock lock{mutex};
-    ForEachImageInRegion(address, max_size, [&](ImageId image_id, Image& image) {
+    // bbport: only an image starting at `address` is affected, so the images over its first byte
+    // are all there is to look at (the whole range was walked for every GPU write binding).
+    ForEachImageInRegion(address, 1, [&](ImageId image_id, Image& image) {
+        static const bool log = std::getenv("BB_IMAGE_SYNC_LOG") != nullptr;
+        if (log) {
+            static std::atomic<u32> printed{0};
+            if (printed.fetch_add(1) < 200) {
+                std::printf("Image sync: GPU write %#llx+%#llx over image %#llx %ux%u fmt %u flags %#x%s\n",
+                            (unsigned long long)address, (unsigned long long)max_size,
+                            (unsigned long long)image.info.guest_address, image.info.size.width,
+                            image.info.size.height, u32(image.info.pixel_format), u32(image.flags),
+                            image.info.guest_address == address ? "" : " (not at its start: kept)");
+            }
+        }
         // Only consider images that match base address.
         // TODO: Maybe also consider subresources
         if (image.info.guest_address != address) {
             return;
         }
         // Ensure image is reuploaded when accessed again.
+        WatchImage(image, "GPU write (marked for refresh)");
         image.flags |= ImageFlagBits::GpuDirty;
     });
 }
@@ -668,12 +746,15 @@ ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure
 ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, ViewMemo* memo,
                                      bool refresh) {
     Image& image = slot_images[image_id];
+    WatchImage(image, refresh ? "texture (refresh)" : "texture (no refresh)");
     if (desc.type == BindingType::Storage) {
         image.flags |= ImageFlagBits::GpuModified;
+        image.gpu_write_tick = scheduler.CurrentTick();
         if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8) &&
             image.info.guest_address != 0) {
             std::unique_lock lk{download_images_mutex};
             download_images.emplace(image_id);
+            downloads_queued.store(true, std::memory_order_release);
         }
     }
     if (refresh) {
@@ -697,10 +778,13 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, Vi
 
 ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& desc) {
     Image& image = slot_images[image_id];
+    WatchImage(image, "render target");
     image.flags |= ImageFlagBits::GpuModified;
+    image.gpu_write_tick = scheduler.CurrentTick();
     if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8)) {
         std::unique_lock lk{download_images_mutex};
         download_images.emplace(image_id);
+        downloads_queued.store(true, std::memory_order_release);
     }
     image.usage.render_target = 1u;
     UpdateImage(image_id);
@@ -723,7 +807,9 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
 
 ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc) {
     Image& image = slot_images[image_id];
+    WatchImage(image, "depth target");
     image.flags |= ImageFlagBits::GpuModified;
+    image.gpu_write_tick = scheduler.CurrentTick();
     image.usage.depth_target = 1u;
     UpdateImage(image_id);
 
@@ -761,6 +847,7 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
 }
 
 void TextureCache::RefreshImage(Image& image) {
+    WatchImage(image, "refresh entered");
     if (False(image.flags & ImageFlagBits::Dirty) || image.info.num_samples > 1) {
         return;
     }
@@ -793,7 +880,50 @@ void TextureCache::RefreshImage(Image& image) {
     const u32 num_mips = image.info.resources.levels;
     const bool is_gpu_modified = True(image.flags & ImageFlagBits::GpuModified);
     const bool is_gpu_dirty = True(image.flags & ImageFlagBits::GpuDirty);
+    static const bool sync_log = std::getenv("BB_IMAGE_SYNC_LOG") != nullptr;
+    if (sync_log && is_gpu_dirty) {
+        static std::atomic<u32> printed{0};
+        if (printed.fetch_add(1) < 100) {
+            std::printf("Image sync: refresh of %#llx (%ux%u) from memory the GPU wrote, flags %#x\n",
+                        (unsigned long long)image.info.guest_address, image.info.size.width,
+                        image.info.size.height, u32(image.flags));
+        }
+    }
 
+    if (sync_log) {
+        // BB_IMAGE_SYNC_LOG: the images refreshed most per 5 s (any reason), with their flags.
+        struct Refreshes {
+            u64 count = 0, bytes = 0;
+            u32 width = 0, height = 0, format = 0, tiling = 0, flags = 0;
+        };
+        static std::mutex refresh_mutex;
+        static std::unordered_map<VAddr, Refreshes> refreshes;
+        static auto window_start = std::chrono::steady_clock::now();
+        std::scoped_lock lk{refresh_mutex};
+        auto& r = refreshes[image.info.guest_address];
+        r = {r.count + 1,
+             r.bytes + image.info.guest_size,
+             image.info.size.width,
+             image.info.size.height,
+             u32(image.info.pixel_format),
+             u32(image.info.tile_mode),
+             r.flags | u32(image.flags)};
+        if (const auto now = std::chrono::steady_clock::now();
+            now - window_start >= std::chrono::seconds(5)) {
+            std::vector<std::pair<VAddr, Refreshes>> top(refreshes.begin(), refreshes.end());
+            std::ranges::sort(top, std::greater{}, [](const auto& e) { return e.second.bytes; });
+            std::string text;
+            for (size_t i = 0; i < std::min<size_t>(top.size(), 5); ++i) {
+                const auto& [address, e] = top[i];
+                text += fmt::format(" {:#x} {}x{} fmt {} tile {}: {}x {:.0f} MB flags {:#x};",
+                                    address, e.width, e.height, e.format, e.tiling, e.count,
+                                    e.bytes / 1e6, e.flags);
+            }
+            std::printf("Image refreshes (5 s, %zu images):%s\n", refreshes.size(), text.c_str());
+            refreshes.clear();
+            window_start = now;
+        }
+    }
     BbStats::image_upload_bytes.fetch_add(image.info.guest_size, std::memory_order_relaxed);
     boost::container::small_vector<vk::BufferImageCopy, 14> image_copies;
     for (u32 m = 0; m < num_mips; m++) {
@@ -830,6 +960,7 @@ void TextureCache::RefreshImage(Image& image) {
         });
     }
 
+    WatchImage(image, image_copies.empty() ? "refresh: nothing to copy" : "refresh: uploading");
     if (image_copies.empty()) {
         image.flags &= ~ImageFlagBits::Dirty;
         return;
@@ -874,6 +1005,9 @@ void TextureCache::RegisterImage(ImageId image_id) {
     image.flags |= ImageFlagBits::Registered;
     ++registry_generation;
     total_used_memory += Common::AlignUp(image.info.guest_size, 1024);
+    BbStats::live_image_bytes.fetch_add(Common::AlignUp(image.info.guest_size, 1024),
+                                        std::memory_order_relaxed);
+    BbStats::live_images.fetch_add(1, std::memory_order_relaxed);
     image.lru_id = lru_cache.Insert(image_id, gc_tick);
     image.lru_touched_tick = gc_tick;
     ForEachPage(image.info.guest_address, image.info.guest_size,
@@ -888,6 +1022,9 @@ void TextureCache::UnregisterImage(ImageId image_id) {
     ++registry_generation;
     lru_cache.Free(image.lru_id);
     total_used_memory -= Common::AlignUp(image.info.guest_size, 1024);
+    BbStats::live_image_bytes.fetch_sub(Common::AlignUp(image.info.guest_size, 1024),
+                                        std::memory_order_relaxed);
+    BbStats::live_images.fetch_sub(1, std::memory_order_relaxed);
     ForEachPage(image.info.guest_address, image.info.guest_size, [this, image_id](u64 page) {
         const auto page_it = page_table.find(page);
         if (page_it == nullptr) {
@@ -1025,7 +1162,16 @@ void TextureCache::GarbageCollectImages() {
             const char* env = std::getenv("BB_GC_BUDGET_MB");
             return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
         }();
-        if (instance.IsIntegrated() || forced_budget) {
+        // bbport: on Windows the desktop and other programs hold 1.3-1.7 GB of a discrete card
+        // before the game starts (deadinside28/bloodborne_pc#39): limits from the startup heap
+        // size let a 6 GB card run out of memory with nothing evicted. WDDM's live budget
+        // already leaves out what others hold, so it is used on every Windows GPU.
+#ifdef _WIN32
+        constexpr bool live_budget = true;
+#else
+        constexpr bool live_budget = false;
+#endif
+        if (live_budget || instance.IsIntegrated() || forced_budget) {
             const u64 budget = forced_budget ? forced_budget : instance.GetDeviceMemoryBudgetNow();
             if (budget != 0) {
                 trigger_gc_memory = budget / 10 * 7;
@@ -1034,37 +1180,95 @@ void TextureCache::GarbageCollectImages() {
             }
         }
     }
+    BbStats::gc_used_bytes.store(total_used_memory, std::memory_order_relaxed);
+    BbStats::gc_trigger_bytes.store(trigger_gc_memory, std::memory_order_relaxed);
+    BbStats::gc_critical_bytes.store(critical_gc_memory, std::memory_order_relaxed);
+    // bbport: gc_tick (one per guest submission, hundreds a second) at each of the last 64
+    // seconds, for ages in seconds. The usage compared is all of our VRAM, not only images: on a
+    // discrete GPU it stays over the trigger, where an age of 16 ticks (~3 frames) evicted every
+    // texture briefly off screen and uploaded it again. Below the pressure mark an image goes
+    // once unused for BB_GC_IDLE_SECONDS (20): the textures of an area left behind.
+    const u64 second = u64(std::chrono::duration_cast<std::chrono::seconds>(
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count());
+    if (second != gc_second) {
+        gc_second = second;
+        // bbport: the driver's budget for our process, once a second: near it the collector evicts
+        // by submissions (as before 0.5) rather than keeping textures for seconds (NoteVramShort).
+        if (instance.CanReportMemoryUsage() && !instance.IsIntegrated()) {
+            const u64 budget = instance.GetDeviceMemoryBudgetNow();
+            if (budget != 0 && total_used_memory >= budget / 100 * 92 &&
+                vram_short_until.load(std::memory_order_relaxed) < second + 2) {
+                vram_short_until.store(second + 2, std::memory_order_relaxed);
+            }
+        }
+        BbStats::coarse_second.store(u32(second), std::memory_order_relaxed);
+        gc_tick_at_second[second % gc_tick_at_second.size()] = gc_tick;
+    }
+    if (BbToggle::Disabled(BbToggle::TextureCollector)) {
+        return;
+    }
     if (total_used_memory < trigger_gc_memory) {
         return;
     }
+    static const u64 idle_seconds = [] {
+        const char* env = std::getenv("BB_GC_IDLE_SECONDS");
+        return std::clamp<u64>(env ? std::strtoull(env, nullptr, 10) : 20, 1, 63);
+    }();
+    // Under pressure an image goes once unused for BB_GC_PRESSURE_IDLE_SECONDS (5), over the
+    // critical mark for 1 s first, and only then by submissions as before (80/160 ticks, a
+    // fraction of a second). On cards up to 8 GB the pressure mark is 40 % of the budget: the
+    // usage stayed over it, so textures off screen for a moment were evicted and uploaded again
+    // when the camera turned back (9000 a minute with a 4.5 GB budget), read over the bus each
+    // time: NVIDIA testers saw the frame rate fall the longer they played.
+    static const u64 pressure_idle_seconds = [] {
+        const char* env = std::getenv("BB_GC_PRESSURE_IDLE_SECONDS");
+        return std::clamp<u64>(env ? std::strtoull(env, nullptr, 10) : 5, 0, 63);
+    }();
+    // The tick at the start of that second (an older one where no submission came then).
+    const auto tick_seconds_ago = [&](u64 seconds) {
+        return gc_tick_at_second[(second - seconds) % gc_tick_at_second.size()];
+    };
+    const u64 idle_tick = tick_seconds_ago(idle_seconds);
     std::scoped_lock lock{mutex};
     bool pressured = false;
     bool aggresive = false;
-    u64 ticks_to_destroy = 0;
+    u64 below_tick = 0;
     size_t num_deletions = 0;
+    u32 visited = 0;
 
-    const auto configure = [&](bool allow_aggressive) {
+    // emergency: over the critical mark after evicting what was unused for a second.
+    const auto configure = [&](bool allow_aggressive, bool emergency = false) {
         pressured = total_used_memory >= pressure_gc_memory;
         aggresive = allow_aggressive && total_used_memory >= critical_gc_memory;
-        ticks_to_destroy = aggresive ? 160 : pressured ? 80 : 16;
-        ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
+        const u64 ticks_to_destroy = std::min<u64>(aggresive ? 160 : pressured ? 80 : 16, gc_tick);
+        below_tick = gc_tick - ticks_to_destroy;
+        if (!pressured && !aggresive) {
+            below_tick = std::min(below_tick, idle_tick);
+        } else if (!emergency && second >= vram_short_until.load(std::memory_order_relaxed)) {
+            const u64 seconds = aggresive ? 1 : pressure_idle_seconds;
+            below_tick = std::min(below_tick, tick_seconds_ago(seconds));
+        }
         num_deletions = aggresive ? 40 : pressured ? 20 : 10;
+        visited = 0;
     };
     const auto clean_up = [&](ImageId image_id) {
-        if (num_deletions == 0) {
+        if (num_deletions == 0 || ++visited > 256) {
             return true;
         }
-        --num_deletions;
         auto& image = slot_images[image_id];
         const bool download = image.SafeToDownload();
         const bool tiled = image.info.IsTiled();
-        if (tiled && download) {
-            // This is a workaround for now. We can't handle non-linear image downloads.
+        // bbport: images that cannot go now (GPU-written: their contents exist only here, and
+        // tiled ones cannot be written back at all) neither use up the deletions nor stay first
+        // in line. The oldest ten being such render targets stopped the collector for good, and
+        // VRAM grew with every area visited up to the pressure mark (~10 GB on 16 GB).
+        if ((tiled && download) || (download && !pressured)) {
+            lru_cache.Touch(image.lru_id, gc_tick);
+            BbStats::gc_kept_images.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
-        if (download && !pressured) {
-            return false;
-        }
+        --num_deletions;
         if (download) {
             // bbport: synchronously, while the image still protects its pages. A deferred
             // write-back landed after FreeImage had unprotected them, over whatever the game
@@ -1073,6 +1277,7 @@ void TextureCache::GarbageCollectImages() {
             ++gc_downloads;
         }
         ++gc_evictions;
+        BbStats::gc_freed_images.fetch_add(1, std::memory_order_relaxed);
         FreeImage(image_id);
         if (total_used_memory < critical_gc_memory) {
             if (aggresive) {
@@ -1090,12 +1295,17 @@ void TextureCache::GarbageCollectImages() {
 
     // Try to remove anything old enough and not high priority.
     configure(false);
-    lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
+    lru_cache.ForEachItemBelow(below_tick, clean_up);
 
     if (total_used_memory >= critical_gc_memory) {
         // If we are still over the critical limit, run an aggressive GC
         configure(true);
-        lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
+        lru_cache.ForEachItemBelow(below_tick, clean_up);
+    }
+    if (total_used_memory >= critical_gc_memory) {
+        // Still over it: what was used a moment ago goes too (out of memory otherwise).
+        configure(true, true);
+        lru_cache.ForEachItemBelow(below_tick, clean_up);
     }
     // bbport: evictions under memory pressure, at most every 5 s (BB_FRAME_STATS or not).
     if (pressured || gc_downloads != 0) {
@@ -1151,6 +1361,13 @@ void TextureCache::GarbageCollectSamplers() {
         configure(true);
         sampler_lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
     }
+}
+
+void TextureCache::NoteVramShort() {
+    const u64 now = u64(std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count());
+    vram_short_until.store(now + 30, std::memory_order_relaxed);
 }
 
 void TextureCache::RunGarbageCollector() {

@@ -60,6 +60,8 @@ enum : std::uint64_t {
     OrderedGuestWrites = 1ull << 49,
     SceneHalfRes = 1ull << 50, ///< live scaling also reduces the 960x540 post targets
     UpdateImageFastPath = 1u << 30,
+    /// Bit set: the texture collector frees nothing (A/B of its evictions while the game runs).
+    TextureCollector = 1ull << 31,
     // TAA A/B in one run: optional techniques, off by default (no measured gain, 2026-10-02).
     TaaTonemapBlend = 1ull << 51,
     TaaClip = 1ull << 52,
@@ -82,6 +84,18 @@ inline std::atomic<std::uint64_t> tracker_faults{0};
 inline std::atomic<std::int64_t> hot_pages{0};
 /// Stall diagnostics (BB_FRAME_STATS): per-frame deltas printed for frames over 40 ms.
 inline std::atomic<std::uint64_t> images_registered{0};
+/// Every Vulkan image we allocated (their memory as allocated: host sizes, mips, scene targets);
+/// the texture collector compares all of our VRAM against the budget (deadinside28/bloodborne_pc).
+inline std::atomic<std::uint64_t> vk_image_bytes{0};
+/// Images alive in the texture cache and their memory.
+inline std::atomic<std::uint64_t> live_image_bytes{0}, live_images{0};
+/// The texture cache collector: the usage it compares, its marks, images it freed or kept.
+inline std::atomic<std::uint64_t> gc_used_bytes{0}, gc_trigger_bytes{0}, gc_critical_bytes{0},
+    gc_freed_images{0}, gc_kept_images{0};
+/// Game frames shown (Presenter::Present), for per-frame streaks of the pipeline cache.
+inline std::atomic<std::uint32_t> frame_number{0};
+/// Seconds of a steady clock, updated at every guest submission (cheap ages for caches).
+inline std::atomic<std::uint32_t> coarse_second{0};
 inline std::atomic<std::uint64_t> image_upload_bytes{0};
 inline std::atomic<std::uint64_t> buffer_upload_bytes{0};
 inline std::atomic<int> gpu_thread_clock{-1}; ///< clockid_t of the GPU command thread

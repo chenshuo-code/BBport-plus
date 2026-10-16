@@ -707,7 +707,9 @@ void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
 
     info.AddWait(signal_sema, signal_tick);
     auto submit_result = instance.GetGraphicsQueue().bindSparse(sparse_info);
-    ASSERT_MSG(submit_result != vk::Result::eErrorDeviceLost, "Device lost during submit");
+    // bbport: a failed bind leaves memory_semaphore unsignalled and the next wait on it hangs.
+    ASSERT_MSG(submit_result == vk::Result::eSuccess, "Sparse bind submit failed: {}",
+               vk::to_string(submit_result));
 
     pending_binds.clear();
 }

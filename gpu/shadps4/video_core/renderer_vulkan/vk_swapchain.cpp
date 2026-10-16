@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
+#include <thread>
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
@@ -37,7 +39,13 @@ void Swapchain::Create(u32 width_, u32 height_) {
     height = height_;
     needs_recreation = false;
 
-    Destroy();
+    // bbport: the previous chain is passed to the driver as oldSwapchain and destroyed only once
+    // the new one exists. Destroying it first made the AMD Windows driver answer
+    // ErrorNativeWindowInUseKHR to the next creation (the surface was still bound to the old
+    // chain) whenever the window was moved or resized, and the assertion ended the game.
+    vk::Device device = instance.GetDevice();
+    WaitIdle();
+    ReleaseImages();
 
     SetSurfaceProperties();
 
@@ -51,7 +59,8 @@ void Swapchain::Create(u32 width_, u32 height_) {
     const vk::SharingMode sharing_mode =
         exclusive ? vk::SharingMode::eExclusive : vk::SharingMode::eConcurrent;
     const auto format = needs_hdr ? SURFACE_FORMAT_HDR : surface_format;
-    const vk::SwapchainCreateInfoKHR swapchain_info = {
+    vk::SwapchainKHR old_swapchain = swapchain;
+    vk::SwapchainCreateInfoKHR swapchain_info = {
         .surface = surface,
         .minImageCount = image_count,
         .imageFormat = format.format,
@@ -67,13 +76,43 @@ void Swapchain::Create(u32 width_, u32 height_) {
         .compositeAlpha = composite_alpha,
         .presentMode = present_mode,
         .clipped = true,
-        .oldSwapchain = nullptr,
+        .oldSwapchain = old_swapchain,
     };
 
-    auto [swapchain_result, chain] = instance.GetDevice().createSwapchainKHR(swapchain_info);
-    ASSERT_MSG(swapchain_result == vk::Result::eSuccess, "Failed to create swapchain: {}",
-               vk::to_string(swapchain_result));
+    // A window that is still being dragged can make the driver refuse the surface for a moment;
+    // retry a few times (releasing the old chain first) before giving up.
+    constexpr int MaxCreateAttempts = 8;
+    vk::SwapchainKHR chain{};
+    for (int attempt = 1;; ++attempt) {
+        const auto created = device.createSwapchainKHR(swapchain_info);
+        if (created.result == vk::Result::eSuccess) {
+            chain = created.value;
+            break;
+        }
+        const bool transient = created.result == vk::Result::eErrorNativeWindowInUseKHR ||
+                               created.result == vk::Result::eErrorInitializationFailed;
+        ASSERT_MSG(transient && attempt < MaxCreateAttempts, "Failed to create swapchain: {}",
+                   vk::to_string(created.result));
+        LOG_WARNING(Render_Vulkan, "Swapchain creation attempt {} failed with {}, retrying",
+                    attempt, vk::to_string(created.result));
+        if (old_swapchain) {
+            // The driver still holds the surface through the old chain: release it, then retry.
+            device.destroySwapchainKHR(old_swapchain);
+            old_swapchain = nullptr;
+            swapchain_info.oldSwapchain = nullptr;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        WaitIdle();
+        SetSurfaceProperties(); // the window may have changed again meanwhile
+        swapchain_info.minImageCount = image_count;
+        swapchain_info.imageExtent = extent;
+        swapchain_info.preTransform = transform;
+        swapchain_info.compositeAlpha = composite_alpha;
+    }
     swapchain = chain;
+    if (old_swapchain) {
+        device.destroySwapchainKHR(old_swapchain);
+    }
 
     SetupImages();
     RefreshSemaphores();
@@ -137,11 +176,20 @@ bool Swapchain::Present() {
     };
 
     auto result = instance.GetPresentQueue().presentKHR(present_info);
-    if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
+    switch (result) {
+    case vk::Result::eSuccess:
+        break;
+    case vk::Result::eErrorOutOfDateKHR:
+    case vk::Result::eSuboptimalKHR:
+    case vk::Result::eErrorSurfaceLostKHR:
+    case vk::Result::eErrorUnknown:
+        // bbport: the same set AcquireNextImage() recovers from. ErrorUnknown is what the AMD
+        // driver returns when the window changed under the chain; a recreation fixes it.
         needs_recreation = true;
-    } else {
-        ASSERT_MSG(result == vk::Result::eSuccess, "Swapchain presentation failed: {}",
-                   vk::to_string(result));
+        break;
+    default:
+        ASSERT_MSG(false, "Swapchain presentation failed: {}", vk::to_string(result));
+        break;
     }
 
     frame_index = (frame_index + 1) % image_count;
@@ -254,21 +302,28 @@ void Swapchain::SetSurfaceProperties() {
 }
 
 void Swapchain::Destroy() {
-    vk::Device device = instance.GetDevice();
-    const auto wait_result = device.waitIdle();
+    WaitIdle();
+    ReleaseImages();
+    if (swapchain) {
+        instance.GetDevice().destroySwapchainKHR(swapchain);
+        swapchain = nullptr;
+    }
+}
+
+void Swapchain::WaitIdle() {
+    const auto wait_result = instance.GetDevice().waitIdle();
     if (wait_result != vk::Result::eSuccess) {
         LOG_WARNING(Render_Vulkan, "Failed to wait for device to become idle: {}",
                     vk::to_string(wait_result));
     }
+}
 
+void Swapchain::ReleaseImages() {
+    vk::Device device = instance.GetDevice();
     for (auto& image_view : images_view) {
         device.destroyImageView(image_view);
     }
     images_view.clear();
-
-    if (swapchain) {
-        device.destroySwapchainKHR(swapchain);
-    }
 
     for (const auto& sem : image_acquired) {
         device.destroySemaphore(sem);

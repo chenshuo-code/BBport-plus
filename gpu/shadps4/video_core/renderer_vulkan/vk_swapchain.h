@@ -105,6 +105,12 @@ private:
     /// Destroys current swapchain resources
     void Destroy();
 
+    /// Waits for the device to finish all work (logs instead of failing when it cannot)
+    void WaitIdle();
+
+    /// Destroys the image views and semaphores but keeps the swapchain handle itself
+    void ReleaseImages();
+
     /// Performs creation of image views and framebuffers from the swapchain images
     void SetupImages();
 

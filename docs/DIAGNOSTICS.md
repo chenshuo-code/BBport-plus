@@ -9,12 +9,15 @@ All files go to `<saves folder>\logs\` (the saves folder is set on the *Game & e
 
 | File | Content |
 |---|---|
-| `run_<time>.log` | Everything the game printed during one run. `user\last_run.log` still holds the newest one. Older runs are kept (the last 40). |
+| `run_<time>.log` | Everything the game printed during one run. `user\last_run.log` still holds the newest one. The last 10 crashes are kept complete (report, log and csv files of that run) and the last 10 other runs; older files are deleted. |
 | `run_<time>_fps.csv` | One row per 5 s window of the game's `Frame stats` line: FPS, worst frame, shader / pipeline compiles and their time. |
 | `run_<time>_stalls.log` | Every frame over 40 ms, with the game's own breakdown: images registered, MB uploaded, time in each stage. Map changes show up here. |
 | `run_<time>_load.csv` | Any GPU vendor: adapter VRAM, 3D engine load, the game's VRAM, free RAM and free commit memory every 2 s (Windows performance counters). |
 | `run_<time>_gpu.csv` | NVIDIA only (`nvidia-smi`): usage, VRAM, temperature, clocks, power and the reasons the GPU is throttling. |
-| `perf_events.log` | Every drop from a steady 55+ FPS to under 40 FPS, with the frame statistics, pacing, GPU / VRAM state, texture-cache pressure and the stalls in that window. |
+| `perf_events.log` | Every drop from a steady 55+ FPS to under 40 FPS, with the frame statistics, pacing, GPU / VRAM state, texture-cache pressure and the stalls in that window. Also every time free commit memory falls under 1.5 GB (`low commit memory`). |
+| `fault_<time>.dmp` | Written by bb-probe's own fault handler together with the `Fault:` report (exit code 3): a minidump with the registers and stacks of every thread and the memory they point to. Newest three kept. Open with WinDbg or Visual Studio, or read the faulting thread with the `minidump.py` script described in docs/GX_FRAME_HEAP.md. |
+| `hang_<time>.txt` | Written when the game process is alive but has printed no frame statistics for 30 s (a freeze, not a crash): every thread with its name, CPU time in 1.5 s, instruction pointer as module + offset and the code addresses on its stack, the free memory and the last log lines. Up to 3 snapshots per run, newest 10 kept. Resolve `bb-probe.exe+0x...` offsets with the matching build's symbols (`llvm-symbolizer --relative-address`). |
+| `..\save_backups\<time>_<reason>\savedata` | Not a log: copies of the saves (start of the game, every 10 min of play when they changed, exit). Newest 10 kept. |
 | `crash_<time>.txt` | Written when the game ends abnormally (see below). |
 | `sessions.csv` | One row per run: duration, result (`ok`, `crash`, `stopped`, `restart`), average / minimum FPS, drops, stalls, peak VRAM. |
 
@@ -23,15 +26,22 @@ All files go to `<saves folder>\logs\` (the saves folder is set on the *Game & e
 The game process exits with a non-zero code, and it was not stopped with the **Stop** button and not
 restarted by the in-game *Apply and restart*. Exit codes: `3` is the runtime's own fault report (the
 `Fault:` lines) or an `abort()`, `20` / `21` are `STOP:` messages for an unsupported PS4 feature,
-`0xC0000005` and friends are Windows exceptions, and `0xFFFFFFFF` means the process was ended from
+`23` is an assertion in the GPU library (the fault lines name the Vulkan call and its result; a
+`GPU hang` line means the GPU did not answer for 30 s, see `BB_GPU_WAIT_LIMIT`), `0xC0000005` and
+friends are Windows exceptions, `0xCFFFFFFF` is a process that stopped responding and was ended
+(Windows logs an *Application Hang* 1002 event), and `0xFFFFFFFF` means the process was ended from
 outside (Task Manager, the system, a driver reset) without leaving a report.
+
+The report also states the lowest free commit memory seen during the run. Under about 1.5 GB
+Windows refuses allocations; the game then dies with an access violation (often in `ucrtbase.dll`)
+or a Vulkan error rather than an out-of-memory message. Enlarge the page file in that case.
 
 The crash report contains: the exit code and its meaning; the fault lines from the game output; the last
 FPS windows, GPU samples and memory state; the graphics adapters and driver versions; the Windows event
 log entries about the game (application errors of `bb-probe.exe`, graphics driver resets 4101 / 4116,
 low memory 2004, power loss 41 / 6008) from the 15 minutes before; the settings (online account data is
 left out); and the last 400 output lines. When the game was started without the launcher window
-(`Play Bloodborne.exe`) a message box tells you where the report is.
+(`Bloodborne.exe --play`, which *Add to Steam* uses) a message box tells you where the report is.
 
 ## Crashes from before the logs existed
 

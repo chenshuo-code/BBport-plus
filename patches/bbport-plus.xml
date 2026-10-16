@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- bbport-plus patches for Bloodborne 1.09 (shadPS4/GoldHEN format; addresses are PS4 virtual
+     addresses, eboot base 0x400000). Found and verified with crash dumps, see docs/GX_FRAME_HEAP.md. -->
+<Patch>
+  <Metadata Title="Bloodborne" Name="GX frame heap 4 MB (fixes the crash after ~1 hour)" Author="GameOClock" PatchVer="1.0" AppVer="01.09" AppElf="eboot.bin" isEnabled="true"
+            Note="The renderer's two per-frame heaps are 256 KB each. Their use grows slowly while playing (about 3-6 KB per minute) and when one is full a GXWorker thread copies into a null pointer: the game ends with an access violation in memcpy (ucrtbase.dll+0xee4b3), after 65-80 minutes in every recorded case. This raises both heaps to 4 MB (mov edx, 0x40000 at 0x2195c09 and 0x2195c46 in the eboot), 16 times the room.">
+    <PatchList>
+      <Line Type="bytes" Address="0x02595c0a" Value="00004000"/>
+      <Line Type="bytes" Address="0x02595c47" Value="00004000"/>
+    </PatchList>
+  </Metadata>
+</Patch>

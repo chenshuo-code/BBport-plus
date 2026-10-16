@@ -45,6 +45,11 @@ MAX_LOG_LINES = 6000
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 # This build; GitHub release tags are windows-v<VERSION>.
 VERSION = '1.6'
+# bbport-plus: this fork's release on top of the upstream version, its author, and its source.
+PLUS_VERSION = 'plus.4'
+FULL_VERSION = f'{VERSION}-{PLUS_VERSION}'
+AUTHOR = 'GameOClock'
+SOURCE_PAGE = 'https://github.com/chenshuo-code/BBport-plus'
 # Co-op: the community server that answers the game's own server requests.
 COMMUNITY_SERVER = 'https://thehuntersdream.com'
 RELEASES_API = 'https://api.github.com/repos/Supermedo/bloodborne_pc/releases/latest'
@@ -351,7 +356,7 @@ def logs_dir(settings):
 
 def make_recorder(settings):
     base = Path(settings.get('user_dir') or DATA_DIR / 'user')
-    return bbport_diag.RunRecorder(base, settings, ini_path(), DATA_DIR, VERSION,
+    return bbport_diag.RunRecorder(base, settings, ini_path(), DATA_DIR, FULL_VERSION,
                                    diagnostics=bool(settings.get('diagnostics', True)))
 
 
@@ -658,8 +663,8 @@ class Launcher:
         side.pack_propagate(False)
         tk.Label(side, text='BLOODBORNE', bg=BG, fg=GOLD, font=('Georgia', 16)).pack(anchor='w', padx=22, pady=(24, 0))
         self.side = side
-        tk.Label(side, text=_('by Super Medo'), bg=BG, fg=TEXT, font=('Segoe UI', 10)).pack(anchor='w', padx=22)
-        tk.Label(side, text=_('native port · Windows', 'нативный порт · Windows') + f'  ·  v{VERSION}' + ('\n' + _('co-op test build') if COOP_TEST else ''), bg=BG, fg=MUTED, justify='left',
+        tk.Label(side, text=f'by {AUTHOR}', bg=BG, fg=TEXT, font=('Segoe UI', 10)).pack(anchor='w', padx=22)
+        tk.Label(side, text=_('native port · Windows', 'нативный порт · Windows') + f'  ·  v{FULL_VERSION}' + ('\n' + _('co-op test build') if COOP_TEST else ''), bg=BG, fg=MUTED, justify='left',
                  font=('Segoe UI', 9)).pack(anchor='w', padx=22, pady=(0, 20))
         self.nav, self.current_page = {}, None
         for name, title in (('play', _('Play', 'Играть')), ('graphics', _('Graphics', 'Графика')),
@@ -667,7 +672,8 @@ class Launcher:
                             ('cheats', _('Cheats', 'Читы')), ('online', _('Online co-op', 'Онлайн-кооператив')),
                             ('mods', _('Mods & patches', 'Моды и патчи')),
                             ('advanced', _('Advanced', 'Дополнительно')),
-                            ('log', _('Log', 'Журнал'))):
+                            ('log', _('Log', 'Журнал')),
+                            ('about', _('About', 'О программе'))):
             item = tk.Label(side, text='    ' + title, bg=BG, fg=TEXT, anchor='w', font=('Segoe UI', 11),
                             pady=10, cursor='hand2')
             item.pack(fill='x')
@@ -706,6 +712,7 @@ class Launcher:
         self.build_mods()
         self.build_advanced()
         self.build_log()
+        self.build_about()
         self.root.bind_all('<MouseWheel>', self.wheel)
         self.refresh_status()
 
@@ -1025,7 +1032,7 @@ class Launcher:
         ttk.Button(holder, text=_('Check for updates', 'Проверить обновления'),
                    command=lambda: threading.Thread(target=self.check_update, args=(True,), daemon=True).start()
                    ).pack(side='left')
-        ttk.Label(holder, text=f'v{VERSION}', style='Muted.TLabel').pack(side='left', padx=10)
+        ttk.Label(holder, text=f'v{FULL_VERSION}', style='Muted.TLabel').pack(side='left', padx=10)
         holder = ttk.Frame(f)
         holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=(10, 0))
         ttk.Button(holder, text=_('Clear shader cache', 'Очистить кэш шейдеров'), command=self.clear_cache).pack(side='left')
@@ -1052,6 +1059,94 @@ class Launcher:
                                                 'Слои валидации Vulkan (нужен Vulkan SDK; сильно замедляет)'))
         self.row(f, _('Extra variables', 'Доп. переменные'), ttk.Entry(f, textvariable=self.var('extra_env', 'app'), width=58),
                  _('NAME=value pairs separated by spaces (README lists them).', 'Пары ИМЯ=значение через пробел (список в README).'))
+
+    def build_about(self):
+        """bbport-plus: what this build is, what it needs, and whose work it builds on."""
+        ttk = self.ttk
+        f = self.scrolled_page('about', _('About', 'О программе'),
+                               _('Requirements, this build and the projects it builds on.',
+                                 'Требования, эта сборка и проекты, на которых она основана.'))
+
+        def text(parent, title, body):
+            r = self.next_row(parent)
+            ttk.Label(parent, text=title).grid(row=r, column=0, sticky='nw', padx=(0, 18), pady=(6, 0))
+            ttk.Label(parent, text=body, wraplength=self.px(600), justify='left').grid(row=r, column=1, sticky='w', pady=(6, 0))
+
+        def links(parent, items):
+            holder = ttk.Frame(parent)
+            holder.grid(row=self.next_row(parent), column=0, columnspan=2, sticky='w', pady=(8, 0))
+            for label, url in items:
+                ttk.Button(holder, text=label, command=lambda u=url: webbrowser.open(u)).pack(side='left', padx=(0, 6))
+
+        self.section(f, _('Requirements', 'Требования'), top=4)
+        text(f, _('Game', 'Игра'),
+             _('You need the game itself: a decrypted dump of Bloodborne for PS4 (CUSA03173, CUSA03023, CUSA00900 ...) '
+               'with update 1.09 merged in. The community patches (60/90 FPS, uncapped) are for 1.09 only; other '
+               'versions run at 30 FPS. No game files are included.',
+               'Нужна сама игра: расшифрованный дамп Bloodborne для PS4 (CUSA03173, CUSA03023, CUSA00900 ...) с обновлением 1.09. '
+               'Патчи сообщества (60/90 FPS, без ограничения) только для 1.09; другие версии идут в 30 FPS. Файлы игры не входят.'))
+        text(f, _('Windows', 'Windows'),
+             _('Windows 10 (1903 or newer) or Windows 11, 64-bit. A current graphics driver with Vulkan 1.3.',
+               'Windows 10 (1903 или новее) или Windows 11, 64-bit. Свежий драйвер видеокарты с Vulkan 1.3.'))
+        text(f, _('Graphics card', 'Видеокарта'),
+             _('Minimum: Vulkan 1.3, 8 GB VRAM (GeForce GTX 1070 / Radeon RX 5700 class) for 1080p. '
+               'Recommended: 12 GB or more for 1440p and 4K (RTX 3060 12 GB / RX 6700 XT and up). FSR 4 needs the INT8 '
+               'shader features (RDNA2/3, RTX 20 and up); DLSS needs an RTX card. Integrated graphics are not enough.',
+               'Минимум: Vulkan 1.3, 8 ГБ VRAM (класса GeForce GTX 1070 / Radeon RX 5700) для 1080p. '
+               'Рекомендуется 12 ГБ и больше для 1440p и 4K (RTX 3060 12 GB / RX 6700 XT и выше). FSR 4 требует INT8 '
+               '(RDNA2/3, RTX 20 и новее); DLSS требует RTX. Встроенной графики недостаточно.'))
+        text(f, _('Processor', 'Процессор'),
+             _('x86-64 with AVX2 (Intel Core 8th gen / AMD Ryzen 2000 or newer), 6 cores or more recommended.',
+               'x86-64 с AVX2 (Intel Core 8-го поколения / AMD Ryzen 2000 или новее), рекомендуется 6 ядер и больше.'))
+        text(f, _('Memory', 'Память'),
+             _('16 GB RAM minimum, 32 GB recommended. The port commits far more memory than a native game (the whole PS4 '
+               'memory image plus GPU copies: 30 to 50 GB of commit charge at 1440p), so the Windows page file must be large: '
+               'set it to a fixed size of at least 16 GB, 32 GB recommended (System > Advanced system settings > Performance > '
+               'Virtual memory). With the automatic 4 GB page file the game ends after an hour with an access violation.',
+               'Минимум 16 ГБ RAM, рекомендуется 32 ГБ. Порт резервирует гораздо больше памяти, чем обычная игра (весь образ '
+               'памяти PS4 плюс копии для GPU: 30–50 ГБ commit в 1440p), поэтому файл подкачки Windows должен быть большим: '
+               'фиксированный размер не меньше 16 ГБ, рекомендуется 32 ГБ (Система > Дополнительные параметры > Быстродействие > '
+               'Виртуальная память). С автоматическим файлом подкачки в 4 ГБ игра через час завершается с ошибкой доступа.'))
+        text(f, _('Disk', 'Диск'),
+             _('About 45 GB for the game dump, 1 GB for the port and up to 4 GB for the shader cache, on an NTFS drive '
+               '(mods use links).',
+               'Около 45 ГБ для дампа игры, 1 ГБ для порта и до 4 ГБ для кэша шейдеров, на диске NTFS (моды используют ссылки).'))
+        text(f, _('Other', 'Прочее'),
+             _('Capture and overlay software (OBS, Bilibili Live, Discord overlay) hooks into the game process and adds '
+               'memory; close it when the game is unstable. The game is tested on AMD Radeon RX 7900 XT and NVIDIA RTX cards.',
+               'Программы захвата и оверлеи (OBS, Bilibili Live, оверлей Discord) внедряются в процесс игры и расходуют память; '
+               'при нестабильности закройте их. Игра проверена на AMD Radeon RX 7900 XT и картах NVIDIA RTX.'))
+
+        self.section(f, _('This build', 'Эта сборка'))
+        text(f, _('Version', 'Версия'), f'bbport-plus {FULL_VERSION}  ·  ' + _('based on upstream windows-v{}', 'на основе upstream windows-v{}').format(VERSION))
+        text(f, _('Author', 'Автор'), AUTHOR)
+        text(f, _('License', 'Лицензия'),
+             _('GPL-2.0-or-later. The source code of this build, its changes and the full credits are on GitHub.',
+               'GPL-2.0-or-later. Исходный код этой сборки, её изменения и полный список благодарностей — на GitHub.'))
+        links(f, [(_('Source code', 'Исходный код'), SOURCE_PAGE), (_('Changes', 'Изменения'), SOURCE_PAGE + '/blob/main/CHANGELOG.md')])
+
+        self.section(f, _('Built on the work of', 'Основано на работе'))
+        text(f, 'Super Medo', _('The Windows port of bbport (windows-v1.6): runtime, launcher, DLSS, online co-op.',
+                               'Порт bbport на Windows (windows-v1.6): рантайм, лаунчер, DLSS, онлайн-кооператив.'))
+        text(f, 'deadinside28', _('bbport, the native port itself; from its 0.5: the texture collector by idle time, background '
+                                 'pipeline compilation, GPU breadcrumbs, the game-file check.',
+                                 'bbport, сам нативный порт; из 0.5: сборщик текстур по времени простоя, фоновая компиляция '
+                                 'конвейеров, GPU breadcrumbs, проверка файлов игры.'))
+        text(f, 'AdrianCsT', _('The AMD object-motion fix (shader varyings), the Intel 12th-gen attack crash fix, the live VRAM '
+                              'budget, crash reports with stack unwinding.',
+                              'Исправление object motion на AMD (varyings шейдеров), краша при атаке на Intel 12-го поколения, '
+                              'живой бюджет VRAM, отчёты о сбоях с разворотом стека.'))
+        text(f, 'shadPS4', _('The Vulkan renderer and shader recompiler the GPU layer is derived from.',
+                            'Vulkan-рендерер и рекомпилятор шейдеров, из которых выведен GPU-слой.'))
+        text(f, _('Also', 'А также'),
+             _('AMD FidelityFX (FSR 3.1 / FSR 4), FireBurn/FSR-Vulkan, NVIDIA DLSS, LibAtrac9, SDL3, FFmpeg, the authors of the '
+               'community patches (Bloodborne.xml) and of the mods, and everyone who sent crash reports.',
+               'AMD FidelityFX (FSR 3.1 / FSR 4), FireBurn/FSR-Vulkan, NVIDIA DLSS, LibAtrac9, SDL3, FFmpeg, авторы патчей '
+               'сообщества (Bloodborne.xml) и модов, и все, кто присылал отчёты о сбоях.'))
+        links(f, [('Super Medo', 'https://github.com/Supermedo/bloodborne_pc'),
+                  ('deadinside28', 'https://github.com/deadinside28/bloodborne_pc'),
+                  ('AdrianCsT', 'https://github.com/AdrianCsT/bloodborne_pc'),
+                  ('shadPS4', 'https://github.com/shadps4-emu/shadPS4')])
 
     def build_log(self):
         tk, ttk = self.tk, self.ttk
@@ -1508,7 +1603,7 @@ class Launcher:
             self.messagebox.showerror('Bloodborne', result.stderr.decode(errors='replace')[:400])
 
     def add_to_steam(self):
-        """Bloodborne in the Steam library (a non-Steam game that starts Play Bloodborne.exe)."""
+        """Bloodborne in the Steam library (a non-Steam game that runs `Bloodborne.exe --play`)."""
         import bbport_steam
         steam = bbport_steam.steam_folder()
         configs = bbport_steam.user_configs(steam) if steam else []
@@ -1516,11 +1611,11 @@ class Launcher:
             self.messagebox.showerror('Bloodborne', _('Steam was not found on this PC (or nobody has signed in to it yet).'))
             return
         if FROZEN:
-            exe, options = PORT_DIR / 'Play Bloodborne.exe', ''
+            exe, options = PORT_DIR / 'Bloodborne.exe', '--play'
         else:
             pythonw = Path(sys.executable).with_name('pythonw.exe')
             exe, options = (pythonw if pythonw.exists() else Path(sys.executable)), f'"{Path(__file__).resolve()}" --play'
-        self.collect()  # Play Bloodborne.exe starts the game with the saved settings
+        self.collect()  # --play starts the game with the saved settings
         restart = False
         if bbport_steam.steam_running():
             if not self.messagebox.askyesno('Bloodborne', _('Steam has to close while the game is added; it starts '
