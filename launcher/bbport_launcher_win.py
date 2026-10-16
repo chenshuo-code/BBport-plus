@@ -13,7 +13,8 @@ so a packaged port needs no Python installation.
 
 Modified in bbport-plus on 2026-10-09 (GPL-2.0 section 2a notice; see CHANGELOG.md): game languages
 Chinese (Simplified, Traditional) and Korean, a log per run, crash reports and frame-drop records
-(bbport_diag.py), the --diag-report command, and no automatic update check.
+(bbport_diag.py), the --diag-report command, and an update check against this project's releases
+that only opens the release page.
 """
 import ctypes
 import json
@@ -178,10 +179,10 @@ INI_DEFAULTS = {'upscaler': 'fsr4', 'preset': '1', 'sharpen': '1', 'sharpness': 
                 'live_resolution': 'auto',
                 **{key: '1' if on else '0' for key, _t, on in EFFECTS + EXTRAS + CHEATS + TWEAKS}}
 APP_DEFAULTS = {'ui_language': '', 'game_dir': str(PORT_DIR.parent / 'CUSA03173'), 'user_dir': '',
-                'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': '1',
+                'mods_dir': '', 'mods_enabled': True, 'patches_dir': '', 'language': bbport_diag.system_game_language(),
                 'player_name': '', 'fullscreen': False, 'hdr': False, 'present_mode': 'Mailbox',
                 'fps_mode': 'uncap', 'frame_cap': '', 'draw_pipe': '', 'readbacks': '',
-                'frames_ahead': '', 'frame_stats': False, 'gpu_profile': False, 'diagnostics': True,
+                'frames_ahead': '', 'frame_stats': False, 'gpu_profile': False, 'diagnostics': True, 'disable_obs_hook': True,
                 'vk_validation': False, 'extra_env': '', 'close_on_play': False,
                 'check_updates': True, 'online': False, 'online_server': 'srv.shadps4.net:31313',
                 'online_webapi': '', 'online_npid': '', 'online_password': '', 'online_upnp': True,
@@ -370,15 +371,24 @@ def diag_report(settings, hours):
     return 0
 
 
-def crash_notice(code, report):
-    """After --play (no window): tells the player that a crash report was written."""
+def reveal_report(report):
+    """Opens the folder of a crash report with the file selected (nothing to click or confirm)."""
     if os.environ.get('BB_NO_DIALOG'):  # scripted tests
         return
-    text = _('The game ended abnormally (exit code {}).\nA crash report was saved:\n{}\n\n'
-             'Open the logs folder?').format(code, report)
-    # MB_YESNO | MB_ICONWARNING | MB_TOPMOST
-    if ctypes.windll.user32.MessageBoxW(None, text, 'Bloodborne', 0x4 | 0x30 | 0x40000) == 6:
-        os.startfile(str(Path(report).parent))
+    try:
+        subprocess.Popen(['explorer', f'/select,{report}'])
+    except OSError:
+        pass
+
+
+def crash_notice(code, report):
+    """After --play (no window): the crash report was written; its folder opens by itself."""
+    if os.environ.get('BB_NO_DIALOG'):  # scripted tests
+        return
+    reveal_report(report)
+    text = _('The game ended abnormally (exit code {}).\nThe crash report was saved and its folder is open:\n{}'
+             ).format(code, report)
+    ctypes.windll.user32.MessageBoxW(None, text, 'Bloodborne', 0x0 | 0x30 | 0x40000)  # MB_OK | MB_ICONWARNING | MB_TOPMOST
 
 
 def game_environment(s):
@@ -410,6 +420,8 @@ def game_environment(s):
             env[name] = '1'
     if s.get('diagnostics', True):  # fork: the frame statistics feed the drop / stall records
         env['BB_FRAME_STATS'] = '1'
+    if s.get('disable_obs_hook', True):  # fork: OBS's Vulkan capture layer is a known cause of crashes
+        env['DISABLE_VULKAN_OBS_CAPTURE'] = '1'
     for item in str(s['extra_env']).split():
         if '=' in item:
             key, value = item.split('=', 1)
@@ -461,8 +473,7 @@ class Launcher:
         root.protocol('WM_DELETE_WINDOW', self.close)
         root.after(100, self.drain_output)
         threading.Thread(target=self.detect_gpu, daemon=True).start()
-        # Fork build: an upstream update would replace this launcher (Chinese, run logs); checks are manual.
-        if self.app.get('check_updates', True) and not COOP_TEST and not bbport_diag.FORK_BUILD:
+        if self.app.get('check_updates', True) and not COOP_TEST:
             threading.Thread(target=self.check_update, daemon=True).start()
 
     def px(self, size):
@@ -1139,6 +1150,7 @@ class Launcher:
                    'Насколько точно данные, записанные GPU, возвращаются игре.'))
         self.section(f, _('Diagnostics', 'Для разработчика'))
         self.check(f, 'diagnostics', 'app', _('Record crash reports, GPU data and frame drops (recommended)'))
+        self.check(f, 'disable_obs_hook', 'app', _('Switch off the OBS capture hook for the game (recommended if OBS is installed)'))
         holder = ttk.Frame(f)
         holder.grid(row=self.next_row(f), column=0, columnspan=2, sticky='w', pady=(4, 8))
         ttk.Button(holder, text=_('Open logs folder'),
@@ -1509,6 +1521,7 @@ class Launcher:
         report = recorder.finish(code)
         if report:
             self.output.put(_('Crash report saved: {}').format(report) + '\n')
+            reveal_report(report)
         self.output.put((code,))
 
     def drain_output(self):
@@ -1577,7 +1590,10 @@ class Launcher:
     def check_update(self, manual=False):
         """Helper thread: asks GitHub for the newest release and offers it when it is newer."""
         try:
-            version, url, page = latest_release()
+            # bbport-plus: the releases of this project; an update is a new overlay that is installed by
+            # hand or with Install-BBportPlus.ps1, so the launcher only opens the release page (url None).
+            version, page = bbport_diag.latest_plus_release()
+            url = None
         except (OSError, ValueError, KeyError) as failure:
             if manual:
                 self.ui_calls.put(lambda error=failure: self.messagebox.showerror(
@@ -1585,11 +1601,11 @@ class Launcher:
             return
 
         def show():
-            if version_tuple(version) > version_tuple(VERSION):
+            if bbport_diag.plus_key(version) > bbport_diag.plus_key(bbport_diag.PLUS_VERSION):
                 self.offer_update(version, url, page)
             elif manual:
                 self.messagebox.showinfo('Bloodborne', _('You have the latest version ({}).',
-                                                         'У вас последняя версия ({}).').format(VERSION))
+                                                         'У вас последняя версия ({}).').format(bbport_diag.PLUS_VERSION))
         self.ui_calls.put(show)
 
     def offer_update(self, version, url, page):

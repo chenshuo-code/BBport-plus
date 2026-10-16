@@ -1,0 +1,122 @@
+<#
+.SYNOPSIS
+    Installs bbport-plus __PLUS_VERSION__: the official upstream bbport package plus this project's launcher.
+
+.DESCRIPTION
+    bbport-plus does not redistribute the upstream binaries. This script
+      1. downloads the upstream release (Supermedo/bloodborne_pc, windows-v1.6) from GitHub,
+      2. checks its SHA-256 against the value pinned below,
+      3. downloads the bbport-plus overlay of this release and checks its SHA-256,
+      4. unpacks the upstream package into the destination folder and puts the overlay over it.
+    No game files are involved, nothing is written outside the destination folder (and a temporary folder),
+    no administrator rights and no registry changes are needed.
+
+.PARAMETER Destination
+    Folder to install into (default: %USERPROFILE%\Games\bbport-plus). It must be on an NTFS drive: the mod
+    overlay needs links, which exFAT and FAT32 do not have.
+
+.PARAMETER OverlayZip
+    Use this local overlay zip instead of downloading it (it is still checked against the pinned hash).
+
+.PARAMETER UpstreamZip
+    Use this local copy of the upstream zip instead of downloading it (it is still checked).
+
+.PARAMETER ModsZip
+    A mods pack made with packaging\windows\make_mods_pack.ps1 (a `mods` folder and a `mods.json`). It is unpacked into
+    the installation, so the mods show up on the launcher's *Mods & patches* page. bbport-plus does not ship any mods.
+
+.PARAMETER Force
+    Install into a destination folder that already has files in it.
+
+.EXAMPLE
+    .\Install-BBportPlus.ps1 -Destination D:\Games\bbport-plus
+#>
+param(
+    [string]$Destination = (Join-Path $env:USERPROFILE 'Games\bbport-plus'),
+    [string]$OverlayZip,
+    [string]$UpstreamZip,
+    [string]$ModsZip,
+    [switch]$Force
+)
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest is very slow with the progress bar
+
+# --- pinned by the release script -------------------------------------------------------------
+$PlusVersion    = '__PLUS_VERSION__'
+$UpstreamUrl    = 'https://github.com/Supermedo/bloodborne_pc/releases/download/windows-v1.6/Bloodborne-Windows.zip'
+$UpstreamSha256 = '8410D1CA83C5335C2178C742C8A077B9CB07BF262018537F85FBA7AC1808BD7D'
+$OverlayUrl     = '__OVERLAY_URL__'
+$OverlaySha256  = '__OVERLAY_SHA256__'
+# -------------------------------------------------------------------------------------------------
+
+function Get-Verified([string]$Url, [string]$Local, [string]$Sha256, [string]$Target, [string]$Name) {
+    if ($Local) {
+        if (-not (Test-Path -LiteralPath $Local)) { throw "$Name not found: $Local" }
+        Copy-Item -LiteralPath $Local -Destination $Target
+    } else {
+        Write-Output "Downloading $Name ..."
+        Invoke-WebRequest -Uri $Url -OutFile $Target -UseBasicParsing
+    }
+    $actual = (Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash
+    if ($actual -ne $Sha256) {
+        throw "$Name does not match the pinned SHA-256.`n  expected $Sha256`n  actual   $actual`nNothing was installed."
+    }
+    Write-Output "$Name verified."
+}
+
+$Destination = [IO.Path]::GetFullPath($Destination)
+$drive = [IO.Path]::GetPathRoot($Destination).TrimEnd('\', ':')
+if ($drive.Length -eq 1) {
+    $fs = (Get-Volume -DriveLetter $drive -ErrorAction SilentlyContinue).FileSystem
+    if ($fs -and $fs -ne 'NTFS') {
+        throw "Drive $($drive): is $fs. bbport mods need an NTFS drive (links); choose a folder on an NTFS drive."
+    }
+}
+if ((Test-Path -LiteralPath $Destination) -and (Get-ChildItem -LiteralPath $Destination -Force | Select-Object -First 1) -and -not $Force) {
+    throw "$Destination already has files. Choose another folder or use -Force."
+}
+
+$work = Join-Path ([IO.Path]::GetTempPath()) ('bbport-plus-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $work | Out-Null
+try {
+    $upZip = Join-Path $work 'upstream.zip'
+    $ovZip = Join-Path $work 'overlay.zip'
+    Get-Verified $UpstreamUrl $UpstreamZip $UpstreamSha256 $upZip 'upstream bbport package (windows-v1.6)'
+    Get-Verified $OverlayUrl $OverlayZip $OverlaySha256 $ovZip "bbport-plus overlay ($PlusVersion)"
+
+    Write-Output 'Unpacking ...'
+    Expand-Archive -LiteralPath $upZip -DestinationPath (Join-Path $work 'upstream')
+    Expand-Archive -LiteralPath $ovZip -DestinationPath (Join-Path $work 'overlay')
+    $package = Get-ChildItem -LiteralPath (Join-Path $work 'upstream') -Recurse -Filter 'bb-probe.exe' |
+        Select-Object -First 1
+    if (-not $package) { throw 'The upstream zip does not contain bin\bb-probe.exe.' }
+    $packageRoot = $package.Directory.Parent.FullName
+
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    robocopy $packageRoot $Destination /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+    # The overlay brings its own Python runtime: replace _internal completely, then copy the rest over.
+    robocopy (Join-Path $work 'overlay\_internal') (Join-Path $Destination '_internal') /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+    robocopy (Join-Path $work 'overlay') $Destination /E /XD _internal /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($ModsZip) {
+        if (-not (Test-Path -LiteralPath $ModsZip)) { throw "Mods pack not found: $ModsZip" }
+        Expand-Archive -LiteralPath $ModsZip -DestinationPath (Join-Path $work 'modspack')
+        $modsRoot = Join-Path $work 'modspack\mods'
+        if (-not (Test-Path -LiteralPath $modsRoot)) { throw 'The mods pack has no "mods" folder.' }
+        robocopy $modsRoot (Join-Path $Destination 'mods') /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+        $modsJson = Join-Path $work 'modspack\mods.json'
+        if (Test-Path -LiteralPath $modsJson) { Copy-Item -LiteralPath $modsJson -Destination (Join-Path $Destination 'mods.json') -Force }
+        $settings = Join-Path $work 'modspack\bbport.ini'
+        if (Test-Path -LiteralPath $settings) { Copy-Item -LiteralPath $settings -Destination (Join-Path $Destination 'bbport.ini') -Force }
+        $modCount = @(Get-ChildItem -LiteralPath (Join-Path $Destination 'mods') -Directory).Count
+        Write-Output "Mods pack installed: $modCount mod folders$(if (Test-Path -LiteralPath $settings) { ' and its graphics settings (bbport.ini)' })."
+    }
+} finally {
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Output ''
+Write-Output "bbport-plus $PlusVersion is installed in $Destination"
+Write-Output 'Next: start Bloodborne.exe, choose your game folder (your own decrypted 1.09 dump) on "Game & effects"'
+Write-Output 'and press PLAY. Pick the game language there (Chinese is in the list); mods are chosen on Mods & patches.'
+Write-Output 'If the game crashes, its crash report is written to <saves folder>\logs and that folder opens by itself.'
+Write-Output 'This project includes no game files.'

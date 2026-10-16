@@ -32,7 +32,8 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-FORK_BUILD = True       # this launcher carries local changes: no automatic update check
+PLUS_VERSION = '1.6-plus.4'   # bbport-plus release; the part before '-plus' is the upstream version it is based on
+PLUS_REPO = 'chenshuo-code/BBport-plus'
 KEEP_RUNS = 10          # runs that ended normally: logs kept (older ones are deleted with their csv files)
 KEEP_CRASHES = 10       # crashes kept, each with the crash report and every file of that run
 KEEP_SAVE_BACKUPS = 10  # save snapshots kept (save_backups\\)
@@ -111,10 +112,11 @@ ZH = {
     'the newest backup': '最新的备份',
     'Record crash reports, GPU data and frame drops (recommended)': '记录崩溃报告、显卡数据和掉帧(推荐)',
     'Open logs folder': '打开日志文件夹',
+    'Switch off the OBS capture hook for the game (recommended if OBS is installed)': '为游戏关闭 OBS 捕获钩子(装了 OBS 时建议开启)',
     'Collect crash history (72 h)': '收集崩溃历史(72 小时)',
     'Report saved:\n{}': '报告已保存:\n{}',
-    'The game ended abnormally (exit code {}).\nA crash report was saved:\n{}\n\nOpen the logs folder?':
-        '游戏异常退出(退出码 {})。\n已保存崩溃报告:\n{}\n\n是否打开日志文件夹?',
+    'The game ended abnormally (exit code {}).\nThe crash report was saved and its folder is open:\n{}':
+        '游戏异常退出(退出码 {})。\n已保存崩溃报告,所在文件夹已自动打开:\n{}',
     'Crash report saved: {}': '崩溃报告已保存:{}',
     'Chinese, Simplified (简体中文)': '简体中文',
     'Chinese, Traditional (繁體中文)': '繁體中文',
@@ -185,6 +187,109 @@ ZH = {
         'AMD FidelityFX(FSR 3.1 / FSR 4)、FireBurn/FSR-Vulkan、NVIDIA DLSS、LibAtrac9、SDL3、FFmpeg、'
         '社区补丁(Bloodborne.xml)和 MOD 的作者们,以及每一位发来崩溃报告的人。',
 }
+
+
+PROBE_EXE = 'bb-probe.exe'   # the game process whose memory, threads and handles are recorded
+
+
+def find_process(exe_name):
+    """(pid, thread count) of the busiest process with this exe name, or None (Toolhelp snapshot)."""
+    class Entry(ctypes.Structure):
+        _fields_ = [('size', ctypes.c_ulong), ('usage', ctypes.c_ulong), ('pid', ctypes.c_ulong),
+                    ('heap', ctypes.c_size_t), ('module', ctypes.c_ulong), ('threads', ctypes.c_ulong),
+                    ('parent', ctypes.c_ulong), ('priority', ctypes.c_long), ('flags', ctypes.c_ulong),
+                    ('exe', ctypes.c_wchar * 260)]
+    try:
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        kernel32.CreateToolhelp32Snapshot.argtypes = [ctypes.c_ulong, ctypes.c_ulong]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.Process32FirstW.argtypes = kernel32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(Entry)]
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    except (AttributeError, OSError):
+        return None
+    if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        return None
+    best = None
+    try:
+        entry = Entry()
+        entry.size = ctypes.sizeof(Entry)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            if entry.exe.lower() == exe_name.lower() and (best is None or entry.threads > best[1]):
+                best = (entry.pid, entry.threads)
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return best
+
+
+def process_stats(pid):
+    """(private MB, working set MB, commit MB, handle count) of a process, or None. Independent of the
+    Windows display language, unlike performance counters."""
+    class Counters(ctypes.Structure):
+        _fields_ = [('cb', ctypes.c_ulong), ('faults', ctypes.c_ulong)] + \
+                   [(name, ctypes.c_size_t) for name in ('peak_ws', 'ws', 'peak_paged', 'paged', 'peak_nonpaged',
+                                                         'nonpaged', 'pagefile', 'peak_pagefile', 'private')]
+    try:
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        psapi = ctypes.WinDLL('psapi', use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.GetProcessHandleCount.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        psapi.GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(Counters), ctypes.c_ulong]
+        handle = kernel32.OpenProcess(0x1000 | 0x0010, 0, pid)  # QUERY_LIMITED_INFORMATION | VM_READ
+    except (AttributeError, OSError):
+        return None
+    if not handle:
+        return None
+    try:
+        counters = Counters()
+        counters.cb = ctypes.sizeof(Counters)
+        if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            return None
+        handles = ctypes.c_ulong(0)
+        kernel32.GetProcessHandleCount(handle, ctypes.byref(handles))
+        mb = 1 << 20
+        return counters.private // mb, counters.ws // mb, counters.pagefile // mb, handles.value
+    finally:
+        kernel32.CloseHandle(handle)
+
+# Windows primary language id -> the game's language id (PS4 system language numbers). The game has more
+# languages than the launcher lists; those fall back to English.
+GAME_LANGUAGES = {0x11: '0', 0x09: '1', 0x0c: '2', 0x0a: '3', 0x07: '4', 0x10: '5', 0x19: '8', 0x12: '9'}
+
+
+def system_game_language(lang_id=None):
+    """The game language that matches the Windows display language ('11' Simplified Chinese, '10' Traditional,
+    '1' English when the game has no such language)."""
+    if lang_id is None:
+        try:
+            lang_id = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+        except (AttributeError, OSError):
+            return '1'
+    primary, sub = lang_id & 0x3ff, lang_id >> 10
+    if primary == 0x04:  # Chinese: Traditional for Taiwan, Hong Kong and Macau, Simplified otherwise
+        return '10' if sub in (0x01, 0x03, 0x05) else '11'
+    return GAME_LANGUAGES.get(primary, '1')
+
+def plus_key(text):
+    """Sort key of a bbport-plus tag such as v1.6-plus.1 -> ((1, 6), 1); unknown tags sort first."""
+    match = re.match(r'v?(\d+(?:\.\d+)*)-plus\.(\d+)', text or '')
+    if not match:
+        return ((0,), 0)
+    return (tuple(int(n) for n in match.group(1).split('.')), int(match.group(2)))
+
+
+def latest_plus_release():
+    """(tag, release page) of the newest bbport-plus release on GitHub."""
+    import urllib.request
+    request = urllib.request.Request(f'https://api.github.com/repos/{PLUS_REPO}/releases/latest',
+                                     headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'bbport-plus'})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        release = json.load(response)
+    return release['tag_name'], release.get('html_url') or f'https://github.com/{PLUS_REPO}/releases/latest'
 
 
 def memory_status():
@@ -568,6 +673,8 @@ class RunRecorder:
         self.commit_low = None                         # (t, MB): lowest free commit memory seen
         self.commit_limit = 0
         self.last_commit_event = -1e9
+        self.procs = collections.deque(maxlen=150)     # the game process: memory, threads, handles
+        self.proc_peak = (0, 0, 0)                     # peak private MB, threads, handles
         self.files = {}
         self.crash_report = None
         self.last_window_time = time.time()
@@ -587,6 +694,7 @@ class RunRecorder:
             threading.Thread(target=self.sample_gpu, daemon=True).start()
             threading.Thread(target=self.sample_windows_counters, daemon=True).start()
             threading.Thread(target=self.watch_hang, daemon=True).start()
+            threading.Thread(target=self.sample_process, daemon=True).start()
             threading.Thread(target=lambda: self.emit('Adapters: ' + ' / '.join(video_controllers()) + '\n'),
                              daemon=True).start()
         else:
@@ -635,7 +743,7 @@ class RunRecorder:
         if shutil.which('nvidia-smi'):
             gpu = run_tool(['nvidia-smi', '--query-gpu=name,driver_version,memory.total,power.limit',
                             '--format=csv,noheader'], 8).strip().replace('\r', '')
-        self.emit(f'=== bbport launcher v{self.version}, run {self.stamp} ===\n'
+        self.emit(f'=== bbport launcher v{self.version} (bbport-plus {PLUS_VERSION}), run {self.stamp} ===\n'
                   f'Windows {platform.version()}, {os.cpu_count()} logical CPUs, free RAM {avail_phys} MB, '
                   f'free commit {avail_commit} of {limit} MB\n'
                   f'NVIDIA: {gpu or "nvidia-smi not found"}\n'
@@ -716,6 +824,10 @@ class RunRecorder:
             load = self.loads[-1]
             gpu += (f'{" || " if sample else ""}adapter 3D {load["load"]:.0f}% | adapter VRAM {load["vram"]} MB | '
                     f'game VRAM {load["game_vram"]} MB')
+        if self.procs:
+            proc = self.procs[-1]
+            gpu += (f'\ngame process: {proc["private"]} MB private, {proc["ws"]} MB in RAM, {proc["threads"]} threads, '
+                    f'{proc["handles"]} handles')
         avail_phys, avail_commit, limit = memory_status()
         kind = 'drop' if baseline >= STEADY_FPS else 'low FPS (no steady 55+ before)'
         lines = [f'--- {datetime.now():%Y-%m-%d %H:%M:%S}  run {self.stamp}  +{t:.0f}s  {kind}: '
@@ -931,6 +1043,25 @@ class RunRecorder:
                                     free_ram, free_commit])
         return False
 
+    def sample_process(self):
+        """Every 2 s: private memory, working set, commit, threads and handles of the game process, so a leak
+        (memory, threads or handles growing with every map change) shows in the numbers."""
+        self.open_csv('proc', ['t_s', 'private_mb', 'working_set_mb', 'commit_mb', 'threads', 'handles'])
+        while not self.closed:
+            time.sleep(2)
+            found = find_process(PROBE_EXE)
+            stats = process_stats(found[0]) if found else None
+            if not stats:
+                continue
+            private, working, commit, handles = stats
+            sample = {'t': self.uptime(), 'private': private, 'ws': working, 'commit': commit,
+                      'threads': found[1], 'handles': handles}
+            with self.lock:
+                self.procs.append(sample)
+            peak = self.proc_peak
+            self.proc_peak = (max(peak[0], private), max(peak[1], found[1]), max(peak[2], handles))
+            self.write_csv('proc', [f'{sample["t"]:.1f}', private, working, commit, found[1], handles])
+
     # ---- end of the run ----------------------------------------------------------------------
     def settings_text(self):
         lines = []
@@ -971,6 +1102,12 @@ class RunRecorder:
                         f'(worst {self.worst_stall:.0f} ms); peak VRAM {self.vram_max} MB\n')
         if self.commit_low:
             summary += self.commit_text() + '\n'
+        if self.procs:
+            first, last = self.procs[0], self.procs[-1]
+            summary += (f'Game process: private memory {first["private"]} -> {last["private"]} MB '
+                        f'(peak {self.proc_peak[0]} MB), threads {first["threads"]} -> {last["threads"]} '
+                        f'(peak {self.proc_peak[1]}), handles {first["handles"]} -> {last["handles"]} '
+                        f'(peak {self.proc_peak[2]})\n')
         self.emit(summary)
         if self.diagnostics and result == 'crash':
             self.crash_report = self.write_crash_report(code, duration)
@@ -1032,6 +1169,11 @@ class RunRecorder:
                       for s in samples]
         with self.lock:
             loads = list(self.loads)[-15:]
+            procs = list(self.procs)[-40:]
+        if procs:
+            lines += ['', '=== game process, last samples (seconds, private MB, in RAM MB, commit MB, threads, handles) ===']
+            lines += [f'{s["t"]:7.1f}  {s["private"]:6d}  {s["ws"]:6d}  {s["commit"]:6d}  {s["threads"]:5d}  {s["handles"]:6d}'
+                      for s in procs]
         if loads:
             lines += ['', '=== last adapter samples (seconds, adapter 3D %, adapter VRAM MB, game VRAM MB) ===']
             lines += [f'{s["t"]:7.1f}  {s["load"]:3.0f}%  {s["vram"]:6d}  {s["game_vram"]:6d}' for s in loads]

@@ -14,6 +14,7 @@ All files go to `<saves folder>\logs\` (the saves folder is set on the *Game & e
 | `run_<time>_stalls.log` | Every frame over 40 ms, with the game's own breakdown: images registered, MB uploaded, time in each stage. Map changes show up here. |
 | `run_<time>_load.csv` | Any GPU vendor: adapter VRAM, 3D engine load, the game's VRAM, free RAM and free commit memory every 2 s (Windows performance counters). |
 | `run_<time>_gpu.csv` | NVIDIA only (`nvidia-smi`): usage, VRAM, temperature, clocks, power and the reasons the GPU is throttling. |
+| `run_<time>_proc.csv` | The game process itself every 2 s: private memory, memory in RAM, commit, **thread count and handle count**. A leak shows as a column that keeps growing, for example a step up at every map change. |
 | `perf_events.log` | Every drop from a steady 55+ FPS to under 40 FPS, with the frame statistics, pacing, GPU / VRAM state, texture-cache pressure and the stalls in that window. Also every time free commit memory falls under 1.5 GB (`low commit memory`). |
 | `fault_<time>.dmp` | Written by bb-probe's own fault handler together with the `Fault:` report (exit code 3): a minidump with the registers and stacks of every thread and the memory they point to. Newest three kept. Open with WinDbg or Visual Studio, or read the faulting thread with the `minidump.py` script described in docs/GX_FRAME_HEAP.md. |
 | `hang_<time>.txt` | Written when the game process is alive but has printed no frame statistics for 30 s (a freeze, not a crash): every thread with its name, CPU time in 1.5 s, instruction pointer as module + offset and the code addresses on its stack, the free memory and the last log lines. Up to 3 snapshots per run, newest 10 kept. Resolve `bb-probe.exe+0x...` offsets with the matching build's symbols (`llvm-symbolizer --relative-address`). |
@@ -40,14 +41,16 @@ The crash report contains: the exit code and its meaning; the fault lines from t
 FPS windows, GPU samples and memory state; the graphics adapters and driver versions; the Windows event
 log entries about the game (application errors of `bb-probe.exe`, graphics driver resets 4101 / 4116,
 low memory 2004, power loss 41 / 6008) from the 15 minutes before; the settings (online account data is
-left out); and the last 400 output lines. When the game was started without the launcher window
-(`Bloodborne.exe --play`, which *Add to Steam* uses) a message box tells you where the report is.
+left out); and the last 400 output lines. Nothing has to be started or clicked: when the game ends
+abnormally the folder with the report opens by itself, with the file selected. After a run started
+without the launcher window (`Bloodborne.exe --play`, which *Add to Steam* uses) a message box says so as well.
 
 ## Crashes from before the logs existed
 
 `Bloodborne.exe --diag-report 72` (or **Advanced → Collect crash history**) writes a report with only the
-Windows event log part for the last 72 hours. `tools\windows\Collect_Crash_History.bat` does the same
-without the game package, for a machine that only needs to be inspected.
+Windows event log part for the last 72 hours. `tools\windows\Collect_Crash_History.bat` (in the source
+repository, not in the release) does the same without the game package, for a machine that only needs to be
+inspected.
 
 ## Reading a drop
 
